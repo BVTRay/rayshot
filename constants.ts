@@ -99,7 +99,18 @@ export const UI_LABELS = {
     lens: 'Lens',
     aspect: 'Aspect',
     notes: 'Notes',
-    deleteEp: 'Delete Episode'
+    deleteEp: 'Delete Episode',
+    visual: 'Visual',
+    generateSketch: 'Generate AI Sketch',
+    settings: 'Settings',
+    apiKey: 'API Key',
+    apiKeyPlaceholder: 'Enter your API Key',
+    saveSettings: 'Save Settings',
+    closeSettings: 'Close',
+    generating: 'Generating...',
+    error: 'Error',
+    zoom: 'Zoom',
+    regenerate: 'Regenerate'
   },
   zh: {
     episodes: '集数列表',
@@ -126,7 +137,18 @@ export const UI_LABELS = {
     lens: '焦段',
     aspect: '画幅',
     notes: '备注',
-    deleteEp: '删除分集'
+    deleteEp: '删除分集',
+    visual: '视觉',
+    generateSketch: '生成AI草图',
+    settings: '设置',
+    apiKey: 'API密钥',
+    apiKeyPlaceholder: '输入您的API密钥',
+    saveSettings: '保存设置',
+    closeSettings: '关闭',
+    generating: '生成中...',
+    error: '错误',
+    zoom: '放大',
+    regenerate: '重新生成'
   }
 };
 

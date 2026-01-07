@@ -10,6 +10,7 @@ interface ComboboxProps {
   placeholder?: string;
   langMode: LanguageMode;
   className?: string;
+  isExpanded?: boolean;
 }
 
 export const Combobox: React.FC<ComboboxProps> = ({
@@ -18,7 +19,8 @@ export const Combobox: React.FC<ComboboxProps> = ({
   onChange,
   placeholder,
   langMode,
-  className
+  className,
+  isExpanded = false
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -98,13 +100,17 @@ export const Combobox: React.FC<ComboboxProps> = ({
     }
   };
 
+  const inputClass = isExpanded 
+    ? "w-full h-full bg-transparent border-0 rounded px-1.5 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-0 transition-colors truncate text-center"
+    : "w-full h-full bg-zinc-900 border border-zinc-700 rounded px-1.5 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors truncate";
+
   return (
-    <div className={`relative ${className}`} ref={containerRef}>
-      <div className="relative group">
+    <div className={`relative ${className}`} ref={containerRef} style={{ height: className?.includes('h-full') ? '100%' : undefined }}>
+      <div className="relative group h-full flex items-center justify-center">
         <input
           ref={inputRef}
           type="text"
-          className="w-full bg-zinc-900 border border-zinc-700 rounded px-1.5 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors truncate"
+          className={inputClass}
           value={isOpen ? query : displayLabel}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -119,7 +125,9 @@ export const Combobox: React.FC<ComboboxProps> = ({
           placeholder={placeholder || "-"}
           autoComplete="off"
         />
-        <ChevronDown size={10} className="absolute right-1 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none group-hover:text-zinc-300" />
+        {!isExpanded && (
+          <ChevronDown size={10} className="absolute right-1 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none group-hover:text-zinc-300" />
+        )}
       </div>
 
       {isOpen && (

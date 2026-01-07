@@ -1,6 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { 
-  Clapperboard, 
   Plus, 
   Download, 
   LayoutList,
@@ -9,7 +8,10 @@ import {
   ChevronDown,
   Save,
   FolderOpen,
-  CheckCircle2
+  CheckCircle2,
+  Settings,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import {
   DndContext, 
@@ -30,6 +32,7 @@ import {
 import { Scene, Shot, SceneField, ShotField, Episode, LanguageMode } from './types';
 import { INT_EXT_OPTIONS, TIMES, DEFAULT_ASPECT_RATIO, UI_LABELS, getUIText } from './constants';
 import { ShotRow } from './components/ShotRow';
+import { RayShotLogo } from './components/RayShotLogo';
 import { exportToExcel } from './services/excelService';
 import { 
   saveToLocalStorage, 
@@ -37,6 +40,7 @@ import {
   exportProjectFile, 
   parseProjectFile 
 } from './services/storageService';
+import { getApiKey, saveApiKey } from './services/geminiService';
 
 const App: React.FC = () => {
   // --- State ---
@@ -66,6 +70,10 @@ const App: React.FC = () => {
   const [activeEpisodeId, setActiveEpisodeId] = useState<string>('ep-1');
   const [activeSceneId, setActiveSceneId] = useState<string>('scene-1');
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState<string>('');
+  const [isSketchExpanded, setIsSketchExpanded] = useState<boolean>(true);
+  const [isComposing, setIsComposing] = useState<boolean>(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -77,7 +85,7 @@ const App: React.FC = () => {
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
-        distance: 8, 
+        distance: 3, 
       },
     }),
     useSensor(KeyboardSensor, {
@@ -100,6 +108,17 @@ const App: React.FC = () => {
       console.log('Loaded from local storage');
     }
     setIsLoaded(true);
+    
+    // Load API Key (with default)
+    const savedApiKey = getApiKey();
+    if (savedApiKey) {
+      setApiKeyInput(savedApiKey);
+    } else {
+      // Set default API Key for Doubao
+      const defaultApiKey = '0d8b9599-f7ab-418d-96fc-dfc31f6e669a';
+      saveApiKey(defaultApiKey);
+      setApiKeyInput(defaultApiKey);
+    }
   }, []);
 
   // 2. Auto-Save on Change
@@ -359,6 +378,19 @@ const App: React.FC = () => {
     setIsExportMenuOpen(false);
   };
 
+  const handleOpenSettings = () => {
+    const savedApiKey = getApiKey();
+    setApiKeyInput(savedApiKey || '');
+    setIsSettingsOpen(true);
+  };
+
+  const handleSaveSettings = () => {
+    if (apiKeyInput.trim()) {
+      saveApiKey(apiKeyInput.trim());
+      setIsSettingsOpen(false);
+    }
+  };
+
   // --- Keyboard Shortcuts ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -392,7 +424,7 @@ const App: React.FC = () => {
       <aside className="w-56 border-r border-zinc-800 flex flex-col bg-zinc-950 flex-shrink-0 z-20 shadow-xl">
         <div className="p-3 border-b border-zinc-800 flex items-center space-x-2 bg-zinc-950">
           <div className="w-7 h-7 bg-gradient-to-br from-cyan-600 to-teal-700 rounded-lg flex items-center justify-center text-white shadow-lg shadow-cyan-900/30">
-            <Clapperboard size={16} />
+            <RayShotLogo size={16} />
           </div>
           <h1 className="font-bold text-base tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-zinc-100 to-zinc-400">RayShot</h1>
         </div>
@@ -495,6 +527,18 @@ const App: React.FC = () => {
           </div>
           
           <div className="flex items-center space-x-3">
+             {/* Settings */}
+             <button
+              onClick={handleOpenSettings}
+              className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800"
+              title={t('settings')}
+             >
+               <Settings size={14} />
+               <span>{t('settings')}</span>
+             </button>
+
+             <div className="w-px h-6 bg-zinc-800 mx-1"></div>
+
              {/* Open Project */}
              <button
               onClick={handleOpenProjectClick}
@@ -529,6 +573,16 @@ const App: React.FC = () => {
                ))}
             </div>
 
+            {/* Sketch View Toggle */}
+            <button
+              onClick={() => setIsSketchExpanded(!isSketchExpanded)}
+              className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800"
+              title={isSketchExpanded ? 'Collapse Sketch' : 'Expand Sketch'}
+            >
+              {isSketchExpanded ? <EyeOff size={14} /> : <Eye size={14} />}
+              <span>{isSketchExpanded ? 'Collapse' : 'Expand'}</span>
+            </button>
+
             <div className="relative">
               <button 
                 onClick={() => setIsExportMenuOpen(!isExportMenuOpen)}
@@ -560,7 +614,7 @@ const App: React.FC = () => {
         </header>
 
         {/* Scene Config (Compact) */}
-        <div className="bg-zinc-925 px-4 py-3 border-b border-zinc-800 flex-shrink-0">
+        <div className="bg-zinc-950 px-4 py-3 border-b border-zinc-800 flex-shrink-0">
            <div className="max-w-5xl">
               <div className="grid grid-cols-12 gap-2">
                 <div className="col-span-2">
@@ -578,7 +632,15 @@ const App: React.FC = () => {
                   <input 
                     type="text" 
                     value={activeScene.location}
-                    onChange={(e) => updateScene(activeScene.id, 'location', e.target.value.toUpperCase())}
+                    onChange={(e) => {
+                      const value = isComposing ? e.target.value : e.target.value.toUpperCase();
+                      updateScene(activeScene.id, 'location', value);
+                    }}
+                    onCompositionStart={() => setIsComposing(true)}
+                    onCompositionEnd={(e) => {
+                      setIsComposing(false);
+                      updateScene(activeScene.id, 'location', e.currentTarget.value.toUpperCase());
+                    }}
                     placeholder={t('locationPlaceholder')}
                     className={`${InputClass} w-full uppercase font-medium tracking-wide`}
                   />
@@ -603,6 +665,9 @@ const App: React.FC = () => {
             sensors={sensors}
             collisionDetection={closestCenter}
             onDragEnd={handleDragEnd}
+            onDragStart={() => {
+              // Optional: Add any drag start logic here
+            }}
           >
             <table className="w-full text-left border-collapse table-fixed">
               <thead className="bg-zinc-900/95 backdrop-blur sticky top-0 z-10 border-b border-zinc-800">
@@ -618,7 +683,8 @@ const App: React.FC = () => {
                   <th className="p-1 text-[10px] font-bold text-zinc-500 w-32">{t('lens')}</th>
                   <th className="p-1 text-[10px] font-bold text-zinc-500 w-16 text-center">{t('aspect')}</th>
                   <th className="p-1 text-[10px] font-bold text-zinc-500 w-40">{t('notes')}</th>
-                  <th className="p-1 w-16 text-center">Actions</th>
+                  <th className={`p-1 text-[10px] font-bold text-zinc-500 w-32 text-center ${!isSketchExpanded ? 'hidden' : ''}`}>{t('visual')}</th>
+                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-16 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-900">
@@ -628,13 +694,16 @@ const App: React.FC = () => {
                 >
                   {activeScene.shots.map((shot) => (
                     <ShotRow 
-                      key={shot.id} 
+                      key={shot.id}
                       shot={shot} 
                       onChange={updateShot} 
                       onDelete={deleteShot}
                       onInsert={insertShot}
                       langMode={langMode}
                       shouldAutoFocus={shot.id === lastAddedShotId}
+                      sceneLocation={activeScene.location}
+                      sceneTime={activeScene.time}
+                      isSketchExpanded={isSketchExpanded}
                     />
                   ))}
                 </SortableContext>
@@ -683,6 +752,60 @@ const App: React.FC = () => {
         </div>
 
       </main>
+
+      {/* Settings Modal */}
+      {isSettingsOpen && (
+        <div 
+          className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4"
+          onClick={() => setIsSettingsOpen(false)}
+        >
+          <div 
+            className="bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl w-full max-w-md p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-zinc-100">{t('settings')}</h3>
+              <button
+                onClick={() => setIsSettingsOpen(false)}
+                className="text-zinc-400 hover:text-zinc-200 transition-colors"
+              >
+                <ChevronDown size={20} className="rotate-180" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className={LabelClass}>{t('apiKey')}</label>
+                <input
+                  type="password"
+                  value={apiKeyInput}
+                  onChange={(e) => setApiKeyInput(e.target.value)}
+                  placeholder={t('apiKeyPlaceholder')}
+                  className={`${InputClass} w-full`}
+                />
+                <p className="text-[10px] text-zinc-500 mt-1">
+                  Your API key is stored locally and never shared.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-2">
+                <button
+                  onClick={() => setIsSettingsOpen(false)}
+                  className="px-4 py-2 text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors"
+                >
+                  {t('closeSettings')}
+                </button>
+                <button
+                  onClick={handleSaveSettings}
+                  className="px-4 py-2 text-xs font-medium bg-cyan-600 hover:bg-cyan-500 text-white rounded transition-colors"
+                >
+                  {t('saveSettings')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

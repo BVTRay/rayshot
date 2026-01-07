@@ -12,6 +12,7 @@ export interface Shot {
   focalLength: string;  // Canonical (English)
   aspectRatio: string;
   notes: string;
+  sketchImage?: string; // Base64 data URL for the generated sketch
 }
 
 export interface Scene {
