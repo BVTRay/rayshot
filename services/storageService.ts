@@ -1,20 +1,24 @@
-import { Episode } from '../types';
+import { Episode, ProjectKeyword } from '../types';
 
 const STORAGE_KEY = 'rayshot_project_data_v1';
+const KEYWORDS_STORAGE_KEY = 'rayshot_project_keywords_v1';
 
 export interface ProjectFile {
   version: string;
   timestamp: number;
+  projectTitle?: string;
   episodes: Episode[];
+  keywords?: ProjectKeyword[];
 }
 
 // --- Local Storage ---
 
-export const saveToLocalStorage = (episodes: Episode[]) => {
+export const saveToLocalStorage = (episodes: Episode[], projectTitle?: string) => {
   try {
     const data: ProjectFile = {
       version: '1.0',
       timestamp: Date.now(),
+      projectTitle,
       episodes,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -25,12 +29,15 @@ export const saveToLocalStorage = (episodes: Episode[]) => {
   }
 };
 
-export const loadFromLocalStorage = (): Episode[] | null => {
+export const loadFromLocalStorage = (): { episodes: Episode[]; projectTitle?: string } | null => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const data: ProjectFile = JSON.parse(raw);
-    return data.episodes || null;
+    return {
+      episodes: data.episodes || [],
+      projectTitle: data.projectTitle
+    };
   } catch (e) {
     console.error("Failed to load from local storage", e);
     return null;
@@ -43,6 +50,7 @@ export const exportProjectFile = (episodes: Episode[], projectTitle: string) => 
   const data: ProjectFile = {
     version: '1.0',
     timestamp: Date.now(),
+    projectTitle,
     episodes,
   };
 
@@ -64,7 +72,7 @@ export const exportProjectFile = (episodes: Episode[], projectTitle: string) => 
   URL.revokeObjectURL(url);
 };
 
-export const parseProjectFile = async (file: File): Promise<Episode[]> => {
+export const parseProjectFile = async (file: File): Promise<{ episodes: Episode[]; projectTitle?: string }> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     
@@ -78,7 +86,10 @@ export const parseProjectFile = async (file: File): Promise<Episode[]> => {
           throw new Error("Invalid file structure: Missing episodes array.");
         }
         
-        resolve(data.episodes);
+        resolve({
+          episodes: data.episodes,
+          projectTitle: data.projectTitle
+        });
       } catch (err) {
         reject(err);
       }
@@ -87,4 +98,25 @@ export const parseProjectFile = async (file: File): Promise<Episode[]> => {
     reader.onerror = () => reject(new Error("Failed to read file"));
     reader.readAsText(file);
   });
+};
+
+// --- Keywords Storage ---
+
+export const saveKeywords = (keywords: ProjectKeyword[]): void => {
+  try {
+    localStorage.setItem(KEYWORDS_STORAGE_KEY, JSON.stringify(keywords));
+  } catch (e) {
+    console.error("Failed to save keywords", e);
+  }
+};
+
+export const loadKeywords = (): ProjectKeyword[] => {
+  try {
+    const raw = localStorage.getItem(KEYWORDS_STORAGE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch (e) {
+    console.error("Failed to load keywords", e);
+    return [];
+  }
 };

@@ -72,6 +72,58 @@ export const TIMES = ['DAY', 'NIGHT', 'DAWN', 'DUSK'];
 export const INT_EXT_OPTIONS = ['INT.', 'EXT.', 'INT./EXT.'];
 export const DEFAULT_ASPECT_RATIO = "9:16";
 
+// --- Int/Ext Translations ---
+export const INT_EXT_TRANSLATIONS: Record<string, Record<LanguageMode, string>> = {
+  'INT.': {
+    en: 'INT.',
+    zh: '内景',
+    bi: 'INT. (内景)'
+  },
+  'EXT.': {
+    en: 'EXT.',
+    zh: '外景',
+    bi: 'EXT. (外景)'
+  },
+  'INT./EXT.': {
+    en: 'INT./EXT.',
+    zh: '内/外景',
+    bi: 'INT./EXT. (内/外景)'
+  }
+};
+
+// --- Time Translations ---
+export const TIME_TRANSLATIONS: Record<string, Record<LanguageMode, string>> = {
+  'DAY': {
+    en: 'DAY',
+    zh: '日',
+    bi: 'DAY (日)'
+  },
+  'NIGHT': {
+    en: 'NIGHT',
+    zh: '夜',
+    bi: 'NIGHT (夜)'
+  },
+  'DAWN': {
+    en: 'DAWN',
+    zh: '黎明',
+    bi: 'DAWN (黎明)'
+  },
+  'DUSK': {
+    en: 'DUSK',
+    zh: '黄昏',
+    bi: 'DUSK (黄昏)'
+  }
+};
+
+// --- Helper Functions ---
+export const getIntExtLabel = (value: string, mode: LanguageMode): string => {
+  return INT_EXT_TRANSLATIONS[value]?.[mode] || value;
+};
+
+export const getTimeLabel = (value: string, mode: LanguageMode): string => {
+  return TIME_TRANSLATIONS[value]?.[mode] || value;
+};
+
 // --- UI Dictionary ---
 export const UI_LABELS = {
   en: {
@@ -102,6 +154,8 @@ export const UI_LABELS = {
     deleteEp: 'Delete Episode',
     visual: 'Visual',
     generateSketch: 'Generate AI Sketch',
+    header: 'Header',
+    time: 'Time',
     settings: 'Settings',
     apiKey: 'API Key',
     apiKeyPlaceholder: 'Enter your API Key',
@@ -140,6 +194,8 @@ export const UI_LABELS = {
     deleteEp: '删除分集',
     visual: '视觉',
     generateSketch: '生成AI草图',
+    header: '类型',
+    time: '时间',
     settings: '设置',
     apiKey: 'API密钥',
     apiKeyPlaceholder: '输入您的API密钥',

@@ -11,6 +11,8 @@ interface ComboboxProps {
   langMode: LanguageMode;
   className?: string;
   isExpanded?: boolean;
+  isHighlighted?: boolean;
+  suggestion?: string;
 }
 
 export const Combobox: React.FC<ComboboxProps> = ({
@@ -20,7 +22,9 @@ export const Combobox: React.FC<ComboboxProps> = ({
   placeholder,
   langMode,
   className,
-  isExpanded = false
+  isExpanded = false,
+  isHighlighted = false,
+  suggestion
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -101,11 +105,20 @@ export const Combobox: React.FC<ComboboxProps> = ({
   };
 
   const inputClass = isExpanded 
-    ? "w-full h-full bg-transparent border-0 rounded px-1.5 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-0 transition-colors truncate text-center"
-    : "w-full h-full bg-zinc-900 border border-zinc-700 rounded px-1.5 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors truncate";
+    ? `w-full h-full bg-transparent border-0 rounded px-1.5 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-0 transition-all truncate text-center ${
+        isHighlighted ? 'ring-2 ring-cyan-400/50 bg-cyan-400/10' : ''
+      }`
+    : `w-full h-full bg-zinc-900 border-0 rounded px-1.5 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-0 transition-all truncate ${
+        isHighlighted ? 'ring-2 ring-cyan-400/50 bg-cyan-400/10' : ''
+      }`;
 
   return (
     <div className={`relative ${className}`} ref={containerRef} style={{ height: className?.includes('h-full') ? '100%' : undefined }}>
+      {suggestion && !value && (
+        <div className="absolute -top-6 left-0 z-50 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-[10px] text-zinc-400 whitespace-nowrap shadow-lg">
+          AI 建议: {suggestion}
+        </div>
+      )}
       <div className="relative group h-full flex items-center justify-center">
         <input
           ref={inputRef}

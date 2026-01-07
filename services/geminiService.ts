@@ -1,6 +1,7 @@
-import { Shot } from '../types';
+import { Shot, ProjectKeyword } from '../types';
 
-const API_KEY_STORAGE_KEY = 'rayshot_gemini_api_key';
+const DOUBAO_API_KEY_STORAGE_KEY = 'rayshot_doubao_api_key';
+const GEMINI_API_KEY_STORAGE_KEY = 'rayshot_gemini_api_key';
 const DOUBAO_API_BASE = 'https://ark.cn-beijing.volces.com/api/v3';
 const DOUBAO_MODEL = 'doubao-seedream-4-5-251128';
 
@@ -10,17 +11,91 @@ export interface GeminiImageResponse {
 }
 
 /**
- * Get the stored API key
+ * Get the stored Doubao API key (for image generation)
  */
 export const getApiKey = (): string | null => {
-  return localStorage.getItem(API_KEY_STORAGE_KEY);
+  return localStorage.getItem(DOUBAO_API_KEY_STORAGE_KEY);
 };
 
 /**
- * Save the API key
+ * Save the Doubao API key (for image generation)
  */
 export const saveApiKey = (key: string): void => {
-  localStorage.setItem(API_KEY_STORAGE_KEY, key);
+  localStorage.setItem(DOUBAO_API_KEY_STORAGE_KEY, key);
+};
+
+/**
+ * Get the stored API key (for text analysis - now using DeepSeek)
+ */
+export const getGeminiApiKey = (): string | null => {
+  return localStorage.getItem(GEMINI_API_KEY_STORAGE_KEY);
+};
+
+/**
+ * Save the API key (for text analysis - now using DeepSeek)
+ */
+export const saveGeminiApiKey = (key: string): void => {
+  localStorage.setItem(GEMINI_API_KEY_STORAGE_KEY, key);
+};
+
+/**
+ * List available Gemini models for the API key
+ */
+export const listAvailableModels = async (): Promise<{ models: string[]; error?: string }> => {
+  const apiKey = getGeminiApiKey();
+  
+  if (!apiKey) {
+    return {
+      models: [],
+      error: 'Gemini API Key not configured.'
+    };
+  }
+
+  try {
+    // Try both v1 and v1beta endpoints
+    const endpoints = [
+      `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
+    ];
+
+    for (const endpoint of endpoints) {
+      try {
+        const response = await fetch(endpoint);
+        
+        if (response.ok) {
+          const data = await response.json();
+          const models: string[] = [];
+          
+          if (data.models && Array.isArray(data.models)) {
+            data.models.forEach((model: any) => {
+              if (model.name) {
+                // Extract model name (e.g., "models/gemini-1.5-flash" -> "gemini-1.5-flash")
+                const modelName = model.name.replace(/^models\//, '');
+                if (model.supportedGenerationMethods?.includes('generateContent')) {
+                  models.push(modelName);
+                }
+              }
+            });
+          }
+          
+          return { models: models.sort() };
+        }
+      } catch (err) {
+        // Try next endpoint
+        continue;
+      }
+    }
+    
+    return {
+      models: [],
+      error: 'Failed to fetch available models from both API versions.'
+    };
+  } catch (error: any) {
+    return {
+      models: [],
+      error: error.message || 'Failed to list models.'
+    };
+  }
 };
 
 /**
@@ -286,6 +361,245 @@ const tryGenerateWithUrl = async (
     return {
       dataUrl: '',
       error: error.message || '生成草图失败。请检查您的API密钥和网络连接。'
+    };
+  }
+};
+
+/**
+ * Get AI suggestions for camera settings based on shot description
+ */
+export interface CameraSuggestion {
+  shot_size: string;
+  perspective: string;
+  movement: string;
+  focal_length: string;
+  reasoning?: string;
+}
+
+export const suggestCameraSettings = async (
+  description: string,
+  sceneLocation: string,
+  previousShot?: { size?: string; movement?: string }
+): Promise<{ suggestion: CameraSuggestion | null; error?: string }> => {
+  // Use Doubao API key (same as image generation)
+  const apiKey = getApiKey();
+  
+  if (!apiKey) {
+    return {
+      suggestion: null,
+      error: 'Doubao API Key not configured.'
+    };
+  }
+
+  if (!description || description.trim().length < 5) {
+    return {
+      suggestion: null,
+      error: 'Description too short.'
+    };
+  }
+
+  try {
+    // Use Doubao API with DeepSeek v3.2 model
+    const DOUBAO_CHAT_API_BASE = 'https://ark.cn-beijing.volces.com/api/v3';
+    const endpoint = `${DOUBAO_CHAT_API_BASE}/chat/completions`;
+    
+    const previousShotInfo = previousShot 
+      ? `Previous Shot: ${previousShot.size || 'N/A'}, ${previousShot.movement || 'N/A'}`
+      : 'Previous Shot: N/A';
+    
+    const prompt = `You are a professional Cinematographer assistant.
+Based on the current Scene Heading and the Shot Description provided by the user, suggest the best technical parameters.
+
+Context:
+- Scene: ${sceneLocation}
+- ${previousShotInfo}
+- Current Description: '${description}'
+
+Return a JSON object ONLY (no markdown, no code blocks):
+{
+  "shot_size": "CU" (or MCU, MS, WS, EWS, FS, ECU, Cowboy),
+  "perspective": "Eye-level" (or Low Angle, High Angle, Top-down, Bird's Eye, Worm's Eye, OTS, POV),
+  "movement": "Static" (or Pan Left, Pan Right, Tilt Up, Tilt Down, Dolly In, Dolly Out, Truck, Pedestal, Zoom In, Zoom Out, Handheld, Whip Pan),
+  "focal_length": "50mm (Standard)" (or "24mm (Wide)", "85mm (Portrait)", "100mm (Telephoto)", "35mm (Standard Wide)", "16mm (Wide)", "Macro"),
+  "reasoning": "Short explanation in Chinese"
+}`;
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v3-2-251201',
+        messages: [
+          {
+            role: 'system',
+            content: '你是专业的电影摄影师助手，擅长根据场景描述推荐最佳的镜头参数。'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 500
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMessage = errorData.error?.message || errorData.error?.code || `API request failed: ${response.status}`;
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    
+    // Extract text from response
+    let extractedText = '';
+    if (data.choices && data.choices[0] && data.choices[0].message) {
+      extractedText = data.choices[0].message.content || '';
+    }
+
+    // Try to parse JSON from response
+    let jsonText = extractedText.trim();
+    if (jsonText.startsWith('```')) {
+      jsonText = jsonText.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '');
+    }
+
+    try {
+      const suggestion: CameraSuggestion = JSON.parse(jsonText);
+      
+      // Validate suggestion
+      if (!suggestion.shot_size || !suggestion.perspective || !suggestion.movement || !suggestion.focal_length) {
+        throw new Error('Invalid suggestion format');
+      }
+
+      return { suggestion };
+    } catch (parseError) {
+      console.error('Failed to parse JSON from response:', parseError);
+      console.error('Response text:', extractedText);
+      return {
+        suggestion: null,
+        error: 'Failed to parse AI response.'
+      };
+    }
+  } catch (error: any) {
+    console.error('Camera suggestion error:', error);
+    return {
+      suggestion: null,
+      error: error.message || '获取建议失败。'
+    };
+  }
+};
+
+/**
+ * Analyze script text and extract entities (Characters, Locations, Items)
+ * Using Doubao API with DeepSeek v3.2 model
+ */
+export const analyzeScriptContext = async (
+  scriptText: string
+): Promise<{ keywords: ProjectKeyword[]; error?: string }> => {
+  // Use Doubao API key (same as image generation)
+  const apiKey = getApiKey();
+  
+  if (!apiKey) {
+    return {
+      keywords: [],
+      error: 'Doubao API Key not configured. Please set your API Key in settings.'
+    };
+  }
+
+  if (!scriptText || scriptText.trim().length === 0) {
+    return {
+      keywords: [],
+      error: 'Please provide script text to analyze.'
+    };
+  }
+
+  try {
+    // Use Doubao API with DeepSeek v3.2 model
+    const DOUBAO_CHAT_API_BASE = 'https://ark.cn-beijing.volces.com/api/v3';
+    const endpoint = `${DOUBAO_CHAT_API_BASE}/chat/completions`;
+    
+    const prompt = `Analyze the following script text and extract a structured JSON list of key entities.
+Categories: 'Character', 'Location', 'Item'.
+Format: [{"name": "Leah", "category": "Character", "visual_traits": "22yo Asian female, short hair, outdoor gear"}].
+Focus on extracting visual descriptions that would be useful for image generation.
+Return ONLY valid JSON array, no other text.
+
+Script text:
+${scriptText.substring(0, 10000)}`;
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v3-2-251201',
+        messages: [
+          {
+            role: 'system',
+            content: '你是人工智能助手，擅长分析文本并提取结构化信息。'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 2000
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMessage = errorData.error?.message || errorData.error?.code || `API request failed: ${response.status}`;
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    
+    // Extract text from response
+    let extractedText = '';
+    if (data.choices && data.choices[0] && data.choices[0].message) {
+      extractedText = data.choices[0].message.content || '';
+    }
+
+    // Try to parse JSON from response
+    // Sometimes AI wraps JSON in markdown code blocks
+    let jsonText = extractedText.trim();
+    if (jsonText.startsWith('```')) {
+      jsonText = jsonText.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '');
+    }
+
+    try {
+      const keywords: ProjectKeyword[] = JSON.parse(jsonText);
+      
+      // Validate and filter keywords
+      const validKeywords = keywords.filter(k => 
+        k && 
+        typeof k.name === 'string' && 
+        k.name.trim().length > 0 &&
+        ['Character', 'Location', 'Item'].includes(k.category)
+      );
+
+      return { keywords: validKeywords };
+    } catch (parseError) {
+      console.error('Failed to parse JSON from response:', parseError);
+      console.error('Response text:', extractedText);
+      return {
+        keywords: [],
+        error: 'Failed to parse AI response. Please try again.'
+      };
+    }
+  } catch (error: any) {
+    console.error('Script analysis error:', error);
+    return {
+      keywords: [],
+      error: error.message || '分析脚本失败。请检查您的API密钥和网络连接。'
     };
   }
 };

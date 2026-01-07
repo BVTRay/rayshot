@@ -1,10 +1,17 @@
 export type LanguageMode = 'en' | 'zh' | 'bi';
 
+export interface ProjectKeyword {
+  name: string;
+  category: 'Character' | 'Location' | 'Item';
+  visual_traits?: string;
+}
+
 export interface Shot {
   id: string;
   shotNumber: number;
   description: string;
   ert: string;
+  duration: number;     // Duration in seconds
   size: string;         // Canonical (English)
   perspective: string;  // Canonical (English)
   movement: string;     // Canonical (English)
