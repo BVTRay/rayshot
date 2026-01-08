@@ -15,7 +15,9 @@ import {
   Loader2,
   Sparkles,
   Edit2,
-  X
+  X,
+  CheckSquare,
+  Tag
 } from 'lucide-react';
 import {
   DndContext, 
@@ -33,10 +35,25 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 
-import { Scene, Shot, SceneField, ShotField, Episode, LanguageMode } from './types';
-import { INT_EXT_OPTIONS, TIMES, DEFAULT_ASPECT_RATIO, UI_LABELS, getUIText, getIntExtLabel, getTimeLabel } from './constants';
-import { ShotRow } from './components/ShotRow';
+import { Scene, Shot, SceneField, ShotField, Episode, LanguageMode, FieldSettings, DefaultValueType } from './types';
+import { 
+  INT_EXT_OPTIONS, 
+  TIMES, 
+  DEFAULT_ASPECT_RATIO, 
+  UI_LABELS, 
+  getUIText, 
+  getIntExtLabel, 
+  getTimeLabel,
+  SHOT_SIZES,
+  PERSPECTIVES,
+  MOVEMENTS,
+  EQUIPMENT,
+  FOCAL_LENGTHS,
+  getLabel
+} from './constants';
+import { ShotRow, FocusableField } from './components/ShotRow';
 import { RayShotLogo } from './components/RayShotLogo';
+import { SceneElementsConfig } from './components/SceneElementsConfig';
 import { exportToExcel } from './services/excelService';
 import { 
   saveToLocalStorage, 
@@ -46,16 +63,28 @@ import {
   saveKeywords,
   loadKeywords
 } from './services/storageService';
-import { getApiKey, saveApiKey, getGeminiApiKey, saveGeminiApiKey, analyzeScriptContext } from './services/geminiService';
+import { getApiKey, saveApiKey, getGeminiApiKey, saveGeminiApiKey, analyzeScriptContext, extractDialoguesAndEffects } from './services/geminiService';
 import { ProjectKeyword } from './types';
 
 const App: React.FC = () => {
   // --- State ---
   const [projectTitle, setProjectTitle] = useState<string>('未命名项目');
+  const [projectAspectRatio, setProjectAspectRatio] = useState<string>(DEFAULT_ASPECT_RATIO); // 项目默认画幅
   const [langMode, setLangMode] = useState<LanguageMode>('zh');
   const [lastAddedShotId, setLastAddedShotId] = useState<string | null>(null);
+  const [focusedShotId, setFocusedShotId] = useState<string | null>(null);
+  const [focusField, setFocusField] = useState<FocusableField>('description');
   const [isLoaded, setIsLoaded] = useState(false); // To prevent auto-save overwriting empty state on load
   const [lastSavedTime, setLastSavedTime] = useState<string | null>(null);
+  const [editingEpisodeId, setEditingEpisodeId] = useState<string | null>(null);
+  const [isBatchEditMode, setIsBatchEditMode] = useState(false);
+  const [selectedShotIds, setSelectedShotIds] = useState<Set<string>>(new Set());
+  const [batchEditValues, setBatchEditValues] = useState<Partial<Record<keyof Shot, string>>>({});
+  const [batchAddCount, setBatchAddCount] = useState<string>('');
+  const [batchAddError, setBatchAddError] = useState(false);
+  const [isDragSelecting, setIsDragSelecting] = useState(false);
+  const [isElementsConfigOpen, setIsElementsConfigOpen] = useState(false);
+  const [isExtractingDialogues, setIsExtractingDialogues] = useState(false);
   
   const [episodes, setEpisodes] = useState<Episode[]>([
     {
@@ -80,7 +109,7 @@ const App: React.FC = () => {
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isProjectSettingsOpen, setIsProjectSettingsOpen] = useState(false);
-  const [projectSettingsTab, setProjectSettingsTab] = useState<'script' | 'keywords'>('script');
+  const [projectSettingsTab, setProjectSettingsTab] = useState<'script' | 'keywords' | 'project'>('script');
   const [apiKeyInput, setApiKeyInput] = useState<string>('');
   const [geminiApiKeyInput, setGeminiApiKeyInput] = useState<string>('');
   const [isSketchExpanded, setIsSketchExpanded] = useState<boolean>(false);
@@ -91,6 +120,28 @@ const App: React.FC = () => {
   const [editingKeyword, setEditingKeyword] = useState<ProjectKeyword | null>(null);
   const [scriptText, setScriptText] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [isFieldSettingsOpen, setIsFieldSettingsOpen] = useState<boolean>(false);
+  const [fieldSettings, setFieldSettings] = useState<FieldSettings>(() => {
+    // 默认所有字段都显示，默认值为空缺
+    // 默认只有时长(ert)允许AI补全
+    const defaultConfig = {
+      visible: true,
+      defaultValueType: 'empty' as DefaultValueType,
+      customValue: undefined,
+      allowAI: false
+    };
+    return {
+      description: { ...defaultConfig },
+      ert: { ...defaultConfig, allowAI: true }, // 默认只有时长允许AI补全
+      size: { ...defaultConfig },
+      perspective: { ...defaultConfig },
+      movement: { ...defaultConfig },
+      equipment: { ...defaultConfig },
+      focalLength: { ...defaultConfig },
+      aspectRatio: { ...defaultConfig, visible: false, customValue: DEFAULT_ASPECT_RATIO }, // 默认画幅字段不可见
+      notes: { ...defaultConfig }
+    };
+  });
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -103,6 +154,17 @@ const App: React.FC = () => {
     const ertValue = parseFloat(shot.ert) || 0;
     return sum + ertValue;
   }, 0);
+
+  // Format duration display: < 120s shows as seconds, >= 120s shows as minutes and seconds
+  const formatDuration = (seconds: number): string => {
+    if (seconds < 120) {
+      return `${seconds.toFixed(1)} 秒`;
+    } else {
+      const minutes = Math.floor(seconds / 60);
+      const remainingSeconds = Math.floor(seconds % 60);
+      return `${minutes} 分钟 ${remainingSeconds} 秒`;
+    }
+  };
   
   // Calculate episode total duration (in minutes) from ERT field
   const episodeTotalDuration = activeEpisode.scenes.reduce((epSum, scene) => {
@@ -136,6 +198,9 @@ const App: React.FC = () => {
       if (savedData.projectTitle) {
         setProjectTitle(savedData.projectTitle);
       }
+      if (savedData.projectAspectRatio) {
+        setProjectAspectRatio(savedData.projectAspectRatio);
+      }
       // Ensure active IDs are valid
       setActiveEpisodeId(savedData.episodes[0].id);
       if(savedData.episodes[0].scenes.length > 0) {
@@ -157,7 +222,7 @@ const App: React.FC = () => {
         movement: '',
         equipment: '',
         focalLength: '',
-        aspectRatio: DEFAULT_ASPECT_RATIO,
+        aspectRatio: projectAspectRatio,
       });
       
       setEpisodes(prev => prev.map(ep => ({
@@ -201,12 +266,12 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!isLoaded) return; // Don't save before initial load is complete
 
-    const success = saveToLocalStorage(episodes, projectTitle);
+    const success = saveToLocalStorage(episodes, projectTitle, projectAspectRatio);
     if (success) {
       const now = new Date();
       setLastSavedTime(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     }
-  }, [episodes, projectTitle, isLoaded]);
+  }, [episodes, projectTitle, projectAspectRatio, isLoaded]);
 
   // Ensure activeSceneId is valid when switching episodes
   useEffect(() => {
@@ -215,6 +280,26 @@ const App: React.FC = () => {
       setActiveSceneId(activeEpisode.scenes[0].id);
     }
   }, [activeEpisodeId, activeEpisode.scenes, activeSceneId]);
+
+  // Clear focusedShotId after it's used
+  useEffect(() => {
+    if (focusedShotId) {
+      const timer = setTimeout(() => {
+        setFocusedShotId(null);
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [focusedShotId]);
+
+  // Clear lastAddedShotId after it's used
+  useEffect(() => {
+    if (lastAddedShotId) {
+      const timer = setTimeout(() => {
+        setLastAddedShotId(null);
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [lastAddedShotId]);
 
   // --- Helpers ---
   const generateId = () => Math.random().toString(36).substr(2, 9);
@@ -230,7 +315,7 @@ const App: React.FC = () => {
 
   // --- Handlers: File I/O ---
   const handleSaveProject = () => {
-    exportProjectFile(episodes, projectTitle);
+    exportProjectFile(episodes, projectTitle, projectAspectRatio);
   };
 
   const handleOpenProjectClick = () => {
@@ -246,6 +331,9 @@ const App: React.FC = () => {
       setEpisodes(importedData.episodes);
       if (importedData.projectTitle) {
         setProjectTitle(importedData.projectTitle);
+      }
+      if (importedData.projectAspectRatio) {
+        setProjectAspectRatio(importedData.projectAspectRatio);
       }
       // Reset active views
       if (importedData.episodes.length > 0) {
@@ -358,19 +446,40 @@ const App: React.FC = () => {
   // --- Handlers: Shot Management ---
 
   const createShot = (inheritFrom: Shot | null): Shot => {
+    // 根据字段配置应用默认值
+    const getDefaultValue = (field: keyof FieldSettings, inheritValue?: string): string => {
+      const config = fieldSettings[field];
+      if (!config) return '';
+      
+      if (config.defaultValueType === 'inherit' && inheritValue !== undefined && inheritValue !== '') {
+        return inheritValue;
+      } else if (config.defaultValueType === 'custom' && config.customValue !== undefined) {
+        return config.customValue;
+      } else {
+        return ''; // empty
+      }
+    };
+    
     return {
       id: generateId(),
       shotNumber: 0, 
-      description: '', 
-      ert: inheritFrom?.ert || '', 
+      description: getDefaultValue('description', inheritFrom?.description),
+      ert: getDefaultValue('ert', inheritFrom?.ert),
       duration: inheritFrom?.duration || 0,
-      notes: '', 
-      size: inheritFrom?.size || '',
-      perspective: inheritFrom?.perspective || '',
-      movement: inheritFrom?.movement || '',
-      equipment: inheritFrom?.equipment || '',
-      focalLength: inheritFrom?.focalLength || '',
-      aspectRatio: inheritFrom?.aspectRatio || DEFAULT_ASPECT_RATIO,
+      notes: getDefaultValue('notes', inheritFrom?.notes),
+      size: getDefaultValue('size', inheritFrom?.size),
+      perspective: getDefaultValue('perspective', inheritFrom?.perspective),
+      movement: getDefaultValue('movement', inheritFrom?.movement),
+      equipment: getDefaultValue('equipment', inheritFrom?.equipment),
+      focalLength: getDefaultValue('focalLength', inheritFrom?.focalLength),
+      aspectRatio: (() => {
+        const value = getDefaultValue('aspectRatio', inheritFrom?.aspectRatio);
+        // 如果返回空字符串且不是明确设置为empty，则使用项目设置的画幅
+        if (value === '' && fieldSettings.aspectRatio?.defaultValueType !== 'empty') {
+          return projectAspectRatio;
+        }
+        return value || projectAspectRatio;
+      })(),
     };
   };
 
@@ -392,7 +501,41 @@ const App: React.FC = () => {
         })
       };
     }));
-  }, [activeEpisodeId, activeSceneId]);
+  }, [activeEpisodeId, activeSceneId, fieldSettings]);
+
+  const addMultipleShots = useCallback((count: number) => {
+    if (count < 2 || count > 50) return;
+    
+    setEpisodes(prev => prev.map(ep => {
+      if (ep.id !== activeEpisodeId) return ep;
+      return {
+        ...ep,
+        scenes: ep.scenes.map(scene => {
+          if (scene.id !== activeSceneId) return scene;
+          
+          const lastShot = scene.shots.length > 0 ? scene.shots[scene.shots.length - 1] : null;
+          const newShots: Shot[] = [];
+          
+          // Create multiple shots
+          for (let i = 0; i < count; i++) {
+            const inheritFrom = i === 0 ? lastShot : newShots[newShots.length - 1];
+            newShots.push(createShot(inheritFrom));
+          }
+          
+          const allShots = reindexShots([...scene.shots, ...newShots]);
+          
+          // Focus on the first new shot
+          if (newShots.length > 0) {
+            setLastAddedShotId(newShots[0].id);
+          }
+          
+          return { ...scene, shots: allShots };
+        })
+      };
+    }));
+    
+    setBatchAddCount('');
+  }, [activeEpisodeId, activeSceneId, fieldSettings]);
 
   const insertShot = useCallback((afterShotId: string) => {
     setEpisodes(prev => prev.map(ep => {
@@ -452,6 +595,104 @@ const App: React.FC = () => {
     }));
   };
 
+  // 提取对白和特效文字
+  const handleExtractDialogues = useCallback(async () => {
+    if (!activeScene || activeScene.shots.length === 0) {
+      alert('当前场景没有镜头，无法提取对白和特效文字。');
+      return;
+    }
+
+    setIsExtractingDialogues(true);
+    try {
+      // 准备画面描述数据
+      const shotDescriptions = activeScene.shots.map(shot => ({
+        shotNumber: shot.shotNumber,
+        description: shot.description
+      }));
+
+      // 调用AI提取
+      const result = await extractDialoguesAndEffects(
+        shotDescriptions,
+        activeScene.location,
+        activeScene.outline,
+        activeScene.elements,
+        keywords
+      );
+
+      if (result.error) {
+        alert(`提取失败：${result.error}`);
+        return;
+      }
+
+      if (result.extractions.length === 0) {
+        alert('未找到对白或特效文字。');
+        return;
+      }
+
+      // 将提取的内容追加到对应镜头的备注中
+      setEpisodes(prev => prev.map(ep => {
+        if (ep.id !== activeEpisodeId) return ep;
+        return {
+          ...ep,
+          scenes: ep.scenes.map(scene => {
+            if (scene.id !== activeSceneId) return scene;
+            return {
+              ...scene,
+              shots: scene.shots.map(shot => {
+                const extraction = result.extractions.find(ext => ext.shotNumber === shot.shotNumber);
+                if (!extraction || (!extraction.dialogue && !extraction.effects)) {
+                  return shot;
+                }
+
+                // 构建要追加的内容
+                const parts: string[] = [];
+                if (extraction.dialogue) {
+                  parts.push(extraction.dialogue);
+                }
+                if (extraction.effects) {
+                  parts.push(extraction.effects);
+                }
+
+                const newContent = parts.join('\n');
+                
+                // 追加到备注（如果原来有内容，先换行再追加）
+                const updatedNotes = shot.notes 
+                  ? `${shot.notes}\n${newContent}`
+                  : newContent;
+
+                return { ...shot, notes: updatedNotes };
+              })
+            };
+          })
+        };
+      }));
+
+      alert(`成功提取 ${result.extractions.length} 个镜头的对白和特效文字。`);
+    } catch (error: any) {
+      alert(`提取失败：${error.message || '未知错误'}`);
+    } finally {
+      setIsExtractingDialogues(false);
+    }
+  }, [activeScene, activeEpisodeId, activeSceneId, keywords]);
+
+  // Batch operations
+  const handleBatchDelete = useCallback(() => {
+    if (selectedShotIds.size === 0) return;
+    setEpisodes(prev => prev.map(ep => {
+      if (ep.id !== activeEpisodeId) return ep;
+      return {
+        ...ep,
+        scenes: ep.scenes.map(scene => {
+          if (scene.id !== activeSceneId) return scene;
+          const filteredShots = scene.shots.filter(s => !selectedShotIds.has(s.id));
+          return { ...scene, shots: reindexShots(filteredShots) };
+        })
+      };
+    }));
+    setSelectedShotIds(new Set());
+  }, [selectedShotIds, activeEpisodeId, activeSceneId]);
+
+
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
@@ -468,8 +709,24 @@ const App: React.FC = () => {
           
           if (oldIndex === -1 || newIndex === -1) return scene;
 
+          // If in batch edit mode and dragging a selected shot, move all selected shots together
+          if (isBatchEditMode && selectedShotIds.size > 1 && selectedShotIds.has(active.id as string)) {
+            const selectedShots = scene.shots.filter(s => selectedShotIds.has(s.id));
+            const unselectedShots = scene.shots.filter(s => !selectedShotIds.has(s.id));
+            
+            // Calculate new position for selected shots
+            const insertIndex = newIndex > oldIndex ? newIndex - selectedShots.length + 1 : newIndex;
+            
+            // Insert selected shots at new position
+            const newShots = [...unselectedShots];
+            newShots.splice(insertIndex, 0, ...selectedShots);
+            
+            return { ...scene, shots: reindexShots(newShots) };
+          } else {
+            // Normal single shot drag
           const reorderedShots = arrayMove(scene.shots, oldIndex, newIndex);
           return { ...scene, shots: reindexShots(reorderedShots) };
+          }
         })
       };
     }));
@@ -577,6 +834,20 @@ const App: React.FC = () => {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [addShot]);
 
+  // Handle mouse drag selection end
+  useEffect(() => {
+    const handleMouseUp = () => {
+      setIsDragSelecting(false);
+    };
+
+    if (isDragSelecting) {
+      document.addEventListener('mouseup', handleMouseUp);
+      return () => {
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [isDragSelecting]);
+
   // --- Styles ---
   const InputClass = "bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all";
   const LabelClass = "block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-1";
@@ -610,24 +881,55 @@ const App: React.FC = () => {
             </button>
           </div>
           <div className="space-y-0.5 max-h-40 overflow-y-auto mb-2 scrollbar-thin">
-            {episodes.map(ep => (
+            {episodes.map(ep => {
+              const isEditing = editingEpisodeId === ep.id;
+              return (
               <div 
                 key={ep.id}
-                onClick={() => setActiveEpisodeId(ep.id)}
+                  onClick={() => {
+                    if (!isEditing) {
+                      setActiveEpisodeId(ep.id);
+                    }
+                  }}
                 className={`
-                  flex items-center space-x-2 px-2 py-1.5 rounded text-xs cursor-pointer transition-all
+                    group flex items-center space-x-2 px-2 py-1.5 rounded text-xs transition-all
                   ${activeEpisodeId === ep.id ? 'bg-zinc-800 text-cyan-400 border-l-2 border-cyan-500' : 'text-zinc-400 hover:bg-zinc-900'}
+                    ${!isEditing ? 'cursor-pointer' : ''}
                 `}
               >
-                <MonitorPlay size={12} />
+                  <MonitorPlay size={12} className="flex-shrink-0" />
+                  {isEditing ? (
                 <input 
-                  className="bg-transparent border-none outline-none w-full cursor-pointer focus:cursor-text text-xs"
+                      className="bg-transparent border-none outline-none flex-1 text-xs focus:ring-1 focus:ring-cyan-500 rounded px-1"
                   value={ep.title}
                   onChange={(e) => updateEpisodeTitle(ep.id, e.target.value)}
-                  onClick={(e) => e.stopPropagation()}
-                />
+                      autoFocus
+                      onBlur={() => setEditingEpisodeId(null)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          setEditingEpisodeId(null);
+                        }
+                        if (e.key === 'Escape') {
+                          setEditingEpisodeId(null);
+                        }
+                      }}
+                    />
+                  ) : (
+                    <span className="flex-1 text-xs">{ep.title}</span>
+                  )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditingEpisodeId(isEditing ? null : ep.id);
+                    }}
+                    className={`flex-shrink-0 p-1 hover:bg-zinc-700 rounded transition-all ${isEditing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                    title={isEditing ? '完成' : '编辑'}
+                  >
+                    {isEditing ? <X size={12} /> : <Edit2 size={12} />}
+                  </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -696,22 +998,22 @@ const App: React.FC = () => {
       <main className="flex-1 flex flex-col h-full min-w-0 bg-zinc-950">
         
         {/* Header */}
-        <header className="h-14 border-b border-zinc-800 flex items-center justify-between px-4 bg-zinc-950 flex-shrink-0 z-10">
-          <div className="flex items-center space-x-4">
+        <header className="h-14 border-b border-zinc-800 flex items-center justify-between px-4 bg-zinc-950 flex-shrink-0 z-10 min-w-0">
+          <div className="flex items-center space-x-4 min-w-0 flex-shrink">
              <input
                type="text"
                value={projectTitle}
                onChange={(e) => setProjectTitle(e.target.value)}
-               className="text-lg font-bold text-zinc-100 bg-transparent border-none outline-none focus:text-cyan-400 transition-colors px-2 py-1 rounded hover:bg-zinc-900 focus:bg-zinc-900"
+               className="text-lg font-bold text-zinc-100 bg-transparent border-none outline-none focus:text-cyan-400 transition-colors px-2 py-1 rounded hover:bg-zinc-900 focus:bg-zinc-900 min-w-0 flex-shrink"
                placeholder="项目名称"
              />
           </div>
           
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center space-x-3 flex-shrink-0">
              {/* AI Autocomplete Toggle */}
              <button
               onClick={() => setIsAutocompleteEnabled(!isAutocompleteEnabled)}
-              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all border ${
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all border flex-shrink-0 whitespace-nowrap ${
                 isAutocompleteEnabled
                   ? 'bg-gradient-to-r from-purple-600/20 to-cyan-600/20 hover:from-purple-600/30 hover:to-cyan-600/30 text-cyan-400 border-purple-500/50 hover:border-purple-400/70 shadow-lg shadow-purple-500/20'
                   : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-500 hover:text-zinc-400 border-zinc-800'
@@ -722,24 +1024,24 @@ const App: React.FC = () => {
                <span>{isAutocompleteEnabled ? 'AI补全' : 'AI补全'}</span>
              </button>
 
-             <div className="w-px h-6 bg-zinc-800 mx-1"></div>
+             <div className="w-px h-6 bg-zinc-800 mx-1 flex-shrink-0"></div>
 
              {/* Project Settings */}
              <button
               onClick={handleOpenProjectSettings}
-              className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800"
+              className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800 flex-shrink-0 whitespace-nowrap"
               title="项目配置"
              >
                <Settings size={14} />
                <span>项目配置</span>
              </button>
 
-             <div className="w-px h-6 bg-zinc-800 mx-1"></div>
+             <div className="w-px h-6 bg-zinc-800 mx-1 flex-shrink-0"></div>
 
              {/* Open Project */}
              <button
               onClick={handleOpenProjectClick}
-              className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800"
+              className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800 flex-shrink-0 whitespace-nowrap"
               title="Open Project File (.ray)"
              >
                <FolderOpen size={14} />
@@ -749,19 +1051,19 @@ const App: React.FC = () => {
              {/* Save Project */}
              <button
               onClick={handleSaveProject}
-              className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800"
+              className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800 flex-shrink-0 whitespace-nowrap"
               title="Save Project File (.ray)"
              >
                <Save size={14} />
                <span>Save</span>
              </button>
 
-             <div className="w-px h-6 bg-zinc-800 mx-1"></div>
+             <div className="w-px h-6 bg-zinc-800 mx-1 flex-shrink-0"></div>
 
-            <div className="relative">
+            <div className="relative flex-shrink-0">
               <button 
                 onClick={() => setIsExportMenuOpen(!isExportMenuOpen)}
-                className="flex items-center space-x-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-700"
+                className="flex items-center space-x-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-700 whitespace-nowrap"
               >
                 <Download size={14} />
                 <span>{t('export')}</span>
@@ -791,14 +1093,14 @@ const App: React.FC = () => {
         {/* Scene Info Bar */}
         <div className="bg-zinc-950 px-4 py-3 border-b border-zinc-800 flex-shrink-0">
           {/* Episode and Scene Info - First Row */}
-          <div className="flex items-center space-x-6 mb-3">
+          <div className="flex items-center space-x-6 mb-3 min-w-0 overflow-hidden">
             {/* Episode Info */}
-            <div className="flex items-center space-x-3">
-              <span className="text-xs text-cyan-500 font-bold tracking-wide">{activeEpisode.title}</span>
+            <div className="flex items-center space-x-3 min-w-0 flex-shrink-0">
+              <span className="text-xs text-cyan-500 font-bold tracking-wide whitespace-nowrap">{activeEpisode.title}</span>
               {episodeTotalDuration > 0 && (
                 <>
-                  <span className="text-xs text-zinc-600">·</span>
-                  <span className="text-xs text-zinc-400">
+                  <span className="text-xs text-zinc-600 flex-shrink-0">·</span>
+                  <span className="text-xs text-zinc-400 whitespace-nowrap">
                     总时长 {episodeTotalMinutes} 分钟
                   </span>
                 </>
@@ -806,19 +1108,19 @@ const App: React.FC = () => {
             </div>
             
             {/* Scene Info */}
-            <div className="flex items-center space-x-3 pl-6 border-l border-zinc-800">
-              <h2 className="text-xs font-bold text-zinc-100">
+            <div className="flex items-center space-x-3 pl-6 border-l border-zinc-800 min-w-0 flex-shrink-0">
+              <h2 className="text-xs font-bold text-zinc-100 whitespace-nowrap">
                 {t('scene')} {activeScene.sceneNumber}
               </h2>
-              <span className="text-xs text-zinc-600">·</span>
-              <span className="text-xs text-zinc-400">
+              <span className="text-xs text-zinc-600 flex-shrink-0">·</span>
+              <span className="text-xs text-zinc-400 whitespace-nowrap">
                 镜头总数 {activeScene.shots.length}
               </span>
               {sceneTotalDuration > 0 && (
                 <>
-                  <span className="text-xs text-zinc-600">·</span>
-                  <span className="text-xs text-zinc-400">
-                    场景时长 {sceneTotalDuration.toFixed(1)} 秒
+                  <span className="text-xs text-zinc-600 flex-shrink-0">·</span>
+                  <span className="text-xs text-zinc-400 whitespace-nowrap">
+                    场景时长 {formatDuration(sceneTotalDuration)}
                   </span>
                 </>
               )}
@@ -826,28 +1128,28 @@ const App: React.FC = () => {
           </div>
 
           {/* Scene Config - Second Row */}
-          <div className="flex items-end justify-between">
-            <div className="flex items-end gap-3">
+          <div className="flex items-end justify-between min-w-0 overflow-hidden">
+            <div className="flex items-end gap-3 min-w-0 flex-shrink-0">
               <div className="w-28">
                 <label className="block text-[10px] font-medium text-zinc-500 mb-1.5">{t('header')}</label>
-                <select 
-                  value={activeScene.intExt}
-                  onChange={(e) => updateScene(activeScene.id, 'intExt', e.target.value)}
-                  className={`${InputClass} w-full appearance-none`}
-                >
+                  <select 
+                    value={activeScene.intExt}
+                    onChange={(e) => updateScene(activeScene.id, 'intExt', e.target.value)}
+                    className={`${InputClass} w-full appearance-none`}
+                  >
                   {INT_EXT_OPTIONS.map(opt => (
                     <option key={opt} value={opt}>
                       {getIntExtLabel(opt, langMode)}
                     </option>
                   ))}
-                </select>
-              </div>
+                  </select>
+                </div>
               
               <div className="flex-1 max-w-md">
                 <label className="block text-[10px] font-medium text-zinc-500 mb-1.5">{t('sceneHeading')}</label>
-                <input 
-                  type="text" 
-                  value={activeScene.location}
+                  <input 
+                    type="text" 
+                    value={activeScene.location}
                   onChange={(e) => {
                     const value = isComposing ? e.target.value : e.target.value.toUpperCase();
                     updateScene(activeScene.id, 'location', value);
@@ -857,37 +1159,106 @@ const App: React.FC = () => {
                     setIsComposing(false);
                     updateScene(activeScene.id, 'location', e.currentTarget.value.toUpperCase());
                   }}
-                  placeholder={t('locationPlaceholder')}
-                  className={`${InputClass} w-full uppercase font-medium tracking-wide`}
-                />
-              </div>
+                    placeholder={t('locationPlaceholder')}
+                    className={`${InputClass} w-full uppercase font-medium tracking-wide`}
+                  />
+                </div>
               
               <div className="w-28">
                 <label className="block text-[10px] font-medium text-zinc-500 mb-1.5">{t('time')}</label>
-                <select 
-                  value={activeScene.time}
-                  onChange={(e) => updateScene(activeScene.id, 'time', e.target.value)}
-                  className={`${InputClass} w-full appearance-none`}
-                >
+                  <select 
+                    value={activeScene.time}
+                    onChange={(e) => updateScene(activeScene.id, 'time', e.target.value)}
+                    className={`${InputClass} w-full appearance-none`}
+                  >
                   {TIMES.map(opt => (
                     <option key={opt} value={opt}>
                       {getTimeLabel(opt, langMode)}
                     </option>
                   ))}
-                </select>
+                  </select>
+                </div>
+              
+              {/* 要素配置按钮 */}
+              <button
+                onClick={() => setIsElementsConfigOpen(true)}
+                className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800 flex-shrink-0 whitespace-nowrap"
+                title="要素配置"
+              >
+                <Tag size={14} />
+                <span>要素配置</span>
+                {activeScene.elements && activeScene.elements.length > 0 && (
+                  <span className="bg-cyan-600 text-white text-[10px] px-1.5 py-0.5 rounded-full">
+                    {activeScene.elements.length}
+                  </span>
+                )}
+              </button>
+
+              {/* AI Extract Button */}
+              <button
+                onClick={handleExtractDialogues}
+                disabled={isExtractingDialogues || !activeScene || activeScene.shots.length === 0}
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-gradient-to-r from-cyan-600 to-purple-600 hover:from-cyan-700 hover:to-purple-700 disabled:from-zinc-700 disabled:to-zinc-700 disabled:cursor-not-allowed text-white rounded text-xs font-medium transition-all shadow-lg hover:shadow-xl disabled:opacity-50 flex-shrink-0 whitespace-nowrap"
+                title="基于场景大纲、关键词和要素配置，自动提取该场景内所有镜头的对白和特效文字"
+              >
+                {isExtractingDialogues ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    <span>提取中</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={14} />
+                    <span>AI提取</span>
+                  </>
+                )}
+              </button>
               </div>
-            </div>
             
-            {/* Sketch View Toggle */}
-            <button
-              onClick={() => setIsSketchExpanded(!isSketchExpanded)}
-              className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800"
-              title={isSketchExpanded ? '收起草图' : '展开草图'}
-            >
-              {isSketchExpanded ? <EyeOff size={14} /> : <Eye size={14} />}
-              <span>{isSketchExpanded ? '收起' : '展开'}</span>
-            </button>
-          </div>
+            {/* Second Row: Column Settings, Sketch View Toggle, Batch Edit Toggle */}
+            <div className="flex items-center justify-end space-x-2 flex-shrink-0">
+              {/* Column Settings Button */}
+              <button
+                onClick={() => setIsFieldSettingsOpen(true)}
+                className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800 flex-shrink-0 whitespace-nowrap"
+                title="列设置"
+              >
+                <Settings size={14} />
+                <span>列设置</span>
+              </button>
+              
+              {/* Sketch View Toggle */}
+              <button
+                onClick={() => setIsSketchExpanded(!isSketchExpanded)}
+                className="flex items-center space-x-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1.5 rounded text-xs font-medium transition-all border border-zinc-800 flex-shrink-0 whitespace-nowrap"
+                title={isSketchExpanded ? '收起草图' : '展开草图'}
+              >
+                {isSketchExpanded ? <EyeOff size={14} /> : <Eye size={14} />}
+                <span>{isSketchExpanded ? '收起' : '展开'}</span>
+              </button>
+
+              {/* Batch Edit Toggle */}
+              <button
+                onClick={() => {
+                  setIsBatchEditMode(!isBatchEditMode);
+                  if (isBatchEditMode) {
+                    setSelectedShotIds(new Set());
+                    setBatchEditValues({});
+                  }
+                }}
+                className={`flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all border flex-shrink-0 whitespace-nowrap ${
+                  isBatchEditMode 
+                    ? 'bg-cyan-900 hover:bg-cyan-800 text-cyan-400 border-cyan-700' 
+                    : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 border-zinc-800'
+                }`}
+                title={isBatchEditMode ? '退出批量编辑' : '批量编辑'}
+              >
+                <CheckSquare size={14} />
+                <span>{isBatchEditMode ? '退出批量编辑' : '批量编辑'}</span>
+              </button>
+            </div>
+
+           </div>
         </div>
 
         {/* Shot Table (Compact) with DnD */}
@@ -900,22 +1271,444 @@ const App: React.FC = () => {
               // Optional: Add any drag start logic here
             }}
           >
+            {isBatchEditMode && (
+                <div className="sticky top-0 z-20 pt-1 pb-1 bg-zinc-950/90 backdrop-blur-sm">
+                  <div className="text-xs font-bold text-zinc-400 mb-3 hidden">批量操作栏</div>
+                  <table className="w-full text-left border-collapse table-fixed">
+                    <tbody>
+                      <tr>
+                        <td className="p-1 w-8"></td>
+                        <td className="p-1 w-8"></td>
+                        {fieldSettings.description.visible && (
+                          <td className="p-1 w-64">
+                            <input
+                              type="text"
+                              value={batchEditValues.description || ''}
+                              onChange={(e) => setBatchEditValues(prev => ({ ...prev, description: e.target.value }))}
+                              onBlur={() => {
+                                if (batchEditValues.description && selectedShotIds.size > 0) {
+                                  setEpisodes(prev => prev.map(ep => {
+                                    if (ep.id !== activeEpisodeId) return ep;
+                                    return {
+                                      ...ep,
+                                      scenes: ep.scenes.map(scene => {
+                                        if (scene.id !== activeSceneId) return scene;
+                                        return {
+                                          ...scene,
+                                          shots: scene.shots.map(shot => {
+                                            if (selectedShotIds.has(shot.id)) {
+                                              return { ...shot, description: batchEditValues.description || '' };
+                                            }
+                                            return shot;
+                                          })
+                                        };
+                                      })
+                                    };
+                                  }));
+                                  setBatchEditValues(prev => ({ ...prev, description: '' }));
+                                }
+                              }}
+                              placeholder="批量编辑..."
+                              className="w-full px-1.5 bg-cyan-950/90 border border-cyan-700/50 rounded text-xs text-cyan-200 placeholder-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                              style={{ 
+                                height: '40px',
+                                lineHeight: '40px'
+                              }}
+                            />
+                          </td>
+                        )}
+                        {fieldSettings.ert.visible && (
+                          <td className="p-1 w-9 text-center">
+                            <div className="flex items-center justify-center gap-0.5">
+                              <input
+                                type="text"
+                                value={batchEditValues.ert || ''}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  if (value === '' || /^\d+$/.test(value)) {
+                                    setBatchEditValues(prev => ({ ...prev, ert: value }));
+                                  }
+                                }}
+                                onBlur={() => {
+                                  if (batchEditValues.ert && selectedShotIds.size > 0) {
+                                    setEpisodes(prev => prev.map(ep => {
+                                      if (ep.id !== activeEpisodeId) return ep;
+                                      return {
+                                        ...ep,
+                                        scenes: ep.scenes.map(scene => {
+                                          if (scene.id !== activeSceneId) return scene;
+                                          return {
+                                            ...scene,
+                                            shots: scene.shots.map(shot => {
+                                              if (selectedShotIds.has(shot.id)) {
+                                                return { ...shot, ert: batchEditValues.ert || '' };
+                                              }
+                                              return shot;
+                                            })
+                                          };
+                                        })
+                                      };
+                                    }));
+                                    setBatchEditValues(prev => ({ ...prev, ert: '' }));
+                                  }
+                                }}
+                                placeholder="0"
+                                className="text-center bg-cyan-950/90 border border-cyan-700/50 rounded text-xs text-cyan-200 placeholder-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                style={{ 
+                                  height: '40px',
+                                  lineHeight: '40px',
+                                  width: '36px',
+                                  minWidth: '36px',
+                                  padding: '0 4px'
+                                }}
+                              />
+                              <span className="text-[9px] text-zinc-600 flex-shrink-0">{getUIText('secondUnit', langMode)}</span>
+                            </div>
+                          </td>
+                        )}
+                        {fieldSettings.size.visible && (
+                          <td className="p-1 w-28">
+                            <select
+                              value={batchEditValues.size || ''}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setBatchEditValues(prev => ({ ...prev, size: value }));
+                                if (value && selectedShotIds.size > 0) {
+                                  setEpisodes(prev => prev.map(ep => {
+                                    if (ep.id !== activeEpisodeId) return ep;
+                                    return {
+                                      ...ep,
+                                      scenes: ep.scenes.map(scene => {
+                                        if (scene.id !== activeSceneId) return scene;
+                                        return {
+                                          ...scene,
+                                          shots: scene.shots.map(shot => {
+                                            if (selectedShotIds.has(shot.id)) {
+                                              return { ...shot, size: value };
+                                            }
+                                            return shot;
+                                          })
+                                        };
+                                      })
+                                    };
+                                  }));
+                                  setBatchEditValues(prev => ({ ...prev, size: '' }));
+                                }
+                              }}
+                              className="w-full px-1 bg-cyan-950/90 border border-cyan-700/50 rounded text-xs text-cyan-200 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                              style={{ 
+                                height: '40px',
+                                lineHeight: '40px'
+                              }}
+                            >
+                              <option value="">-</option>
+                              {SHOT_SIZES.map(opt => (
+                                <option key={opt.value} value={opt.value}>{getLabel(opt, langMode)}</option>
+                              ))}
+                            </select>
+                          </td>
+                        )}
+                        {fieldSettings.perspective.visible && (
+                          <td className="p-1 w-28">
+                            <select
+                              value={batchEditValues.perspective || ''}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setBatchEditValues(prev => ({ ...prev, perspective: value }));
+                                if (value && selectedShotIds.size > 0) {
+                                  setEpisodes(prev => prev.map(ep => {
+                                    if (ep.id !== activeEpisodeId) return ep;
+                                    return {
+                                      ...ep,
+                                      scenes: ep.scenes.map(scene => {
+                                        if (scene.id !== activeSceneId) return scene;
+                                        return {
+                                          ...scene,
+                                          shots: scene.shots.map(shot => {
+                                            if (selectedShotIds.has(shot.id)) {
+                                              return { ...shot, perspective: value };
+                                            }
+                                            return shot;
+                                          })
+                                        };
+                                      })
+                                    };
+                                  }));
+                                  setBatchEditValues(prev => ({ ...prev, perspective: '' }));
+                                }
+                              }}
+                              className="w-full px-1 bg-cyan-950/90 border border-cyan-700/50 rounded text-xs text-cyan-200 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                              style={{ 
+                                height: '40px',
+                                lineHeight: '40px'
+                              }}
+                            >
+                              <option value="">-</option>
+                              {PERSPECTIVES.map(opt => (
+                                <option key={opt.value} value={opt.value}>{getLabel(opt, langMode)}</option>
+                              ))}
+                            </select>
+                          </td>
+                        )}
+                        {fieldSettings.movement.visible && (
+                          <td className="p-1 w-28">
+                            <select
+                              value={batchEditValues.movement || ''}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setBatchEditValues(prev => ({ ...prev, movement: value }));
+                                if (value && selectedShotIds.size > 0) {
+                                  setEpisodes(prev => prev.map(ep => {
+                                    if (ep.id !== activeEpisodeId) return ep;
+                                    return {
+                                      ...ep,
+                                      scenes: ep.scenes.map(scene => {
+                                        if (scene.id !== activeSceneId) return scene;
+                                        return {
+                                          ...scene,
+                                          shots: scene.shots.map(shot => {
+                                            if (selectedShotIds.has(shot.id)) {
+                                              return { ...shot, movement: value };
+                                            }
+                                            return shot;
+                                          })
+                                        };
+                                      })
+                                    };
+                                  }));
+                                  setBatchEditValues(prev => ({ ...prev, movement: '' }));
+                                }
+                              }}
+                              className="w-full px-1 bg-cyan-950/90 border border-cyan-700/50 rounded text-xs text-cyan-200 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                              style={{ 
+                                height: '40px',
+                                lineHeight: '40px'
+                              }}
+                            >
+                              <option value="">-</option>
+                              {MOVEMENTS.map(opt => (
+                                <option key={opt.value} value={opt.value}>{getLabel(opt, langMode)}</option>
+                              ))}
+                            </select>
+                          </td>
+                        )}
+                        {fieldSettings.equipment.visible && (
+                          <td className="p-1 w-24">
+                            <select
+                              value={batchEditValues.equipment || ''}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setBatchEditValues(prev => ({ ...prev, equipment: value }));
+                                if (value && selectedShotIds.size > 0) {
+                                  setEpisodes(prev => prev.map(ep => {
+                                    if (ep.id !== activeEpisodeId) return ep;
+                                    return {
+                                      ...ep,
+                                      scenes: ep.scenes.map(scene => {
+                                        if (scene.id !== activeSceneId) return scene;
+                                        return {
+                                          ...scene,
+                                          shots: scene.shots.map(shot => {
+                                            if (selectedShotIds.has(shot.id)) {
+                                              return { ...shot, equipment: value };
+                                            }
+                                            return shot;
+                                          })
+                                        };
+                                      })
+                                    };
+                                  }));
+                                  setBatchEditValues(prev => ({ ...prev, equipment: '' }));
+                                }
+                              }}
+                              className="w-full px-1 bg-cyan-950/90 border border-cyan-700/50 rounded text-xs text-cyan-200 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                              style={{ 
+                                height: '40px',
+                                lineHeight: '40px'
+                              }}
+                            >
+                              <option value="">-</option>
+                              {EQUIPMENT.map(opt => (
+                                <option key={opt.value} value={opt.value}>{getLabel(opt, langMode)}</option>
+                              ))}
+                            </select>
+                          </td>
+                        )}
+                        {fieldSettings.focalLength.visible && (
+                          <td className="p-1 w-32">
+                            <select
+                              value={batchEditValues.focalLength || ''}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setBatchEditValues(prev => ({ ...prev, focalLength: value }));
+                                if (value && selectedShotIds.size > 0) {
+                                  setEpisodes(prev => prev.map(ep => {
+                                    if (ep.id !== activeEpisodeId) return ep;
+                                    return {
+                                      ...ep,
+                                      scenes: ep.scenes.map(scene => {
+                                        if (scene.id !== activeSceneId) return scene;
+                                        return {
+                                          ...scene,
+                                          shots: scene.shots.map(shot => {
+                                            if (selectedShotIds.has(shot.id)) {
+                                              return { ...shot, focalLength: value };
+                                            }
+                                            return shot;
+                                          })
+                                        };
+                                      })
+                                    };
+                                  }));
+                                  setBatchEditValues(prev => ({ ...prev, focalLength: '' }));
+                                }
+                              }}
+                              className="w-full px-1 bg-cyan-950/90 border border-cyan-700/50 rounded text-xs text-cyan-200 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                              style={{ 
+                                height: '40px',
+                                lineHeight: '40px'
+                              }}
+                            >
+                              <option value="">-</option>
+                              {FOCAL_LENGTHS.map(opt => (
+                                <option key={opt.value} value={opt.value}>{getLabel(opt, langMode)}</option>
+                              ))}
+                            </select>
+                          </td>
+                        )}
+                        {fieldSettings.aspectRatio.visible && (
+                          <td className="p-1 w-16 text-center">
+                            <input
+                              type="text"
+                              value={batchEditValues.aspectRatio || ''}
+                              onChange={(e) => setBatchEditValues(prev => ({ ...prev, aspectRatio: e.target.value }))}
+                              onBlur={() => {
+                                if (batchEditValues.aspectRatio && selectedShotIds.size > 0) {
+                                  setEpisodes(prev => prev.map(ep => {
+                                    if (ep.id !== activeEpisodeId) return ep;
+                                    return {
+                                      ...ep,
+                                      scenes: ep.scenes.map(scene => {
+                                        if (scene.id !== activeSceneId) return scene;
+                                        return {
+                                          ...scene,
+                                          shots: scene.shots.map(shot => {
+                                            if (selectedShotIds.has(shot.id)) {
+                                              return { ...shot, aspectRatio: batchEditValues.aspectRatio || '' };
+                                            }
+                                            return shot;
+                                          })
+                                        };
+                                      })
+                                    };
+                                  }));
+                                  setBatchEditValues(prev => ({ ...prev, aspectRatio: '' }));
+                                }
+                              }}
+                              placeholder="画幅"
+                              className="w-full px-1 bg-cyan-950/90 border border-cyan-700/50 rounded text-xs text-cyan-200 placeholder-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500 text-center"
+                              style={{ 
+                                height: '40px',
+                                lineHeight: '40px'
+                              }}
+                            />
+                          </td>
+                        )}
+                        {fieldSettings.notes.visible && (
+                          <td className="p-1 w-40">
+                            <input
+                              type="text"
+                              value={batchEditValues.notes || ''}
+                              onChange={(e) => setBatchEditValues(prev => ({ ...prev, notes: e.target.value }))}
+                              onBlur={() => {
+                                if (batchEditValues.notes && selectedShotIds.size > 0) {
+                                  setEpisodes(prev => prev.map(ep => {
+                                    if (ep.id !== activeEpisodeId) return ep;
+                                    return {
+                                      ...ep,
+                                      scenes: ep.scenes.map(scene => {
+                                        if (scene.id !== activeSceneId) return scene;
+                                        return {
+                                          ...scene,
+                                          shots: scene.shots.map(shot => {
+                                            if (selectedShotIds.has(shot.id)) {
+                                              return { ...shot, notes: batchEditValues.notes || '' };
+                                            }
+                                            return shot;
+                                          })
+                                        };
+                                      })
+                                    };
+                                  }));
+                                  setBatchEditValues(prev => ({ ...prev, notes: '' }));
+                                }
+                              }}
+                              placeholder="批量编辑..."
+                              className="w-full px-1.5 bg-cyan-950/90 border border-cyan-700/50 rounded text-xs text-cyan-200 placeholder-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                              style={{ 
+                                height: '40px',
+                                lineHeight: '40px'
+                              }}
+                            />
+                          </td>
+                        )}
+                        {isSketchExpanded && <td className="p-1 w-32"></td>}
+                        <td className="p-1 w-12 text-center">
+                          <button
+                            onClick={() => {
+                              if (selectedShotIds.size === activeScene.shots.length) {
+                                setSelectedShotIds(new Set());
+                              } else {
+                                setSelectedShotIds(new Set(activeScene.shots.map(s => s.id)));
+                              }
+                            }}
+                            className="w-full px-1 bg-cyan-950/90 hover:bg-cyan-950/50 border border-cyan-700/50 hover:border-cyan-600 text-cyan-300 hover:text-cyan-200 rounded text-[10px] transition-all"
+                            style={{ 
+                              height: '40px',
+                              lineHeight: '40px'
+                            }}
+                            title={selectedShotIds.size === activeScene.shots.length ? '清空选择' : '全选'}
+                          >
+                            {selectedShotIds.size === activeScene.shots.length ? '清空' : '全选'}
+                          </button>
+                        </td>
+                        <td className="p-1 w-12 text-center">
+                          {selectedShotIds.size > 0 ? (
+                            <button
+                              onClick={handleBatchDelete}
+                              className="w-full px-1 bg-red-900/50 hover:bg-red-900 text-red-400 hover:text-red-300 rounded text-[10px] transition-all flex items-center justify-center"
+                              title="批量删除"
+                              style={{ 
+                                height: '40px',
+                                lineHeight: '40px'
+                              }}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          ) : null}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+            )}
             <table className="w-full text-left border-collapse table-fixed">
-              <thead className="bg-zinc-900/95 backdrop-blur sticky top-0 z-10 border-b border-zinc-800">
+              <thead className={`bg-zinc-900/95 backdrop-blur sticky z-30 border-b border-zinc-800 ${isBatchEditMode ? 'top-[48px]' : 'top-0'}`}>
                 <tr>
                   <th className="p-1 w-8"></th>
                   <th className="p-1 text-[10px] font-bold text-zinc-500 text-center w-8">#</th>
-                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-64">{t('desc')}</th>
-                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-20 text-center">{t('ert')}</th>
-                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-28">{t('size')}</th>
-                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-28">{t('angle')}</th>
-                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-28">{t('move')}</th>
-                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-24">{t('gear')}</th>
-                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-32">{t('lens')}</th>
-                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-16 text-center">{t('aspect')}</th>
-                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-40">{t('notes')}</th>
+                  {fieldSettings.description.visible && <th className="p-1 text-[10px] font-bold text-zinc-500 w-64 text-center">{t('desc')}</th>}
+                  {fieldSettings.ert.visible && <th className="p-1 text-[10px] font-bold text-zinc-500 w-9 text-center">{t('ert')}</th>}
+                  {fieldSettings.size.visible && <th className="p-1 text-[10px] font-bold text-zinc-500 w-28 text-center">{t('size')}</th>}
+                  {fieldSettings.perspective.visible && <th className="p-1 text-[10px] font-bold text-zinc-500 w-28 text-center">{t('angle')}</th>}
+                  {fieldSettings.movement.visible && <th className="p-1 text-[10px] font-bold text-zinc-500 w-28 text-center">{t('move')}</th>}
+                  {fieldSettings.equipment.visible && <th className="p-1 text-[10px] font-bold text-zinc-500 w-24 text-center">{t('gear')}</th>}
+                  {fieldSettings.focalLength.visible && <th className="p-1 text-[10px] font-bold text-zinc-500 w-32 text-center">{t('lens')}</th>}
+                  {fieldSettings.aspectRatio.visible && <th className="p-1 text-[10px] font-bold text-zinc-500 w-16 text-center">{t('aspect')}</th>}
+                  {fieldSettings.notes.visible && <th className="p-1 text-[10px] font-bold text-zinc-500 w-40 text-center">{t('notes')}</th>}
                   <th className={`p-1 text-[10px] font-bold text-zinc-500 w-32 text-center ${!isSketchExpanded ? 'hidden' : ''}`}>{t('visual')}</th>
-                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-16 text-center">Actions</th>
+                  {isBatchEditMode && <th className="p-1 text-[10px] font-bold text-zinc-500 w-12 text-center">选择</th>}
+                  <th className="p-1 text-[10px] font-bold text-zinc-500 w-12 text-center">操作</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-900">
@@ -925,23 +1718,54 @@ const App: React.FC = () => {
                 >
                   {activeScene.shots.map((shot, index) => {
                     const previousShot = index > 0 ? activeScene.shots[index - 1] : undefined;
+                    const nextShot = index < activeScene.shots.length - 1 ? activeScene.shots[index + 1] : undefined;
                     return (
-                      <ShotRow 
-                        key={shot.id}
-                        shot={shot} 
-                        onChange={updateShot} 
-                        onDelete={deleteShot}
-                        onInsert={insertShot}
-                        onAddShot={addShot}
-                        langMode={langMode}
-                        shouldAutoFocus={shot.id === lastAddedShotId}
-                        sceneLocation={activeScene.location}
-                        sceneTime={activeScene.time}
-                        isSketchExpanded={isSketchExpanded}
-                        isAutocompleteEnabled={isAutocompleteEnabled}
-                        keywords={keywords}
-                        previousShot={previousShot ? { size: previousShot.size, movement: previousShot.movement } : undefined}
-                      />
+                    <ShotRow 
+                      key={shot.id} 
+                      shot={shot} 
+                      onChange={updateShot} 
+                      onDelete={deleteShot}
+                      onInsert={insertShot}
+                      onAddShot={addShot}
+                      onNavigateNext={(currentField) => {
+                        if (nextShot) {
+                          setFocusedShotId(nextShot.id);
+                          setFocusField(currentField);
+                        } else {
+                          // If on last row, add new shot
+                          setFocusField(currentField);
+                          addShot();
+                        }
+                      }}
+                      langMode={langMode}
+                      shouldAutoFocus={shot.id === lastAddedShotId || shot.id === focusedShotId}
+                      focusField={focusField}
+                      sceneLocation={activeScene.location}
+                      sceneTime={activeScene.time}
+                      sceneOutline={activeScene.outline}
+                      sceneElements={activeScene.elements}
+                      isSketchExpanded={isSketchExpanded}
+                      isAutocompleteEnabled={isAutocompleteEnabled}
+                      keywords={keywords}
+                      previousShot={previousShot ? { size: previousShot.size, movement: previousShot.movement } : undefined}
+                      fieldSettings={fieldSettings}
+                      isBatchEditMode={isBatchEditMode}
+                      isSelected={selectedShotIds.has(shot.id)}
+                      onToggleSelect={(shotId) => {
+                        setSelectedShotIds(prev => {
+                          const next = new Set(prev);
+                          if (next.has(shotId)) {
+                            next.delete(shotId);
+                          } else {
+                            next.add(shotId);
+                          }
+                          return next;
+                        });
+                      }}
+                      isDragSelecting={isDragSelecting}
+                      onDragSelectStart={() => setIsDragSelecting(true)}
+                      onDragSelectEnd={() => setIsDragSelecting(false)}
+                    />
                     );
                   })}
                 </SortableContext>
@@ -951,13 +1775,64 @@ const App: React.FC = () => {
           
           {/* Add Shot at Bottom */}
           <div className="px-4 pb-8 pt-2">
+            <div className="flex items-center gap-2">
+              {/* Batch Add Button */}
+              <div className="flex items-center gap-2 bg-zinc-900/50 border border-zinc-800 rounded px-2 py-1">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={batchAddCount}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value === '' || /^\d+$/.test(value)) {
+                      setBatchAddCount(value);
+                      setBatchAddError(false);
+                    }
+                  }}
+                  className={`w-12 px-1 py-0.5 bg-zinc-800 border rounded text-xs text-zinc-200 text-center focus:outline-none focus:ring-1 focus:ring-cyan-500 transition-all ${
+                    batchAddError 
+                      ? 'border-red-500 bg-red-900/20 animate-shake' 
+                      : 'border-zinc-700'
+                  }`}
+                  style={{
+                    WebkitAppearance: 'none',
+                    MozAppearance: 'textfield'
+                  }}
+                />
+                <style>{`
+                  input[type="text"][inputmode="numeric"]::-webkit-outer-spin-button,
+                  input[type="text"][inputmode="numeric"]::-webkit-inner-spin-button {
+                    -webkit-appearance: none;
+                    margin: 0;
+                  }
+                `}</style>
+                <button
+                  onClick={() => {
+                    const count = parseInt(batchAddCount);
+                    if (!batchAddCount || isNaN(count) || count < 2 || count > 50) {
+                      setBatchAddError(true);
+                      setTimeout(() => setBatchAddError(false), 500);
+                    } else {
+                      addMultipleShots(count);
+                    }
+                  }}
+                  className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-cyan-400 rounded text-xs transition-all flex items-center gap-1"
+                  title="批量添加镜头"
+                >
+                  <Plus size={12} />
+                  <span>批量添加</span>
+                </button>
+              </div>
+
+              {/* Add Next Shot Button */}
             <button 
               onClick={addShot}
-              className="w-full border-2 border-dashed border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300 hover:bg-zinc-900/50 py-3 rounded flex items-center justify-center transition-all group"
+                className="flex-1 border-2 border-dashed border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300 hover:bg-zinc-900/50 py-1 rounded flex items-center justify-center transition-all group"
             >
               <Plus size={16} className="mr-2 group-hover:scale-110 transition-transform" />
-              <span className="text-sm font-medium font-mono tracking-wide">+ ADD NEXT SHOT</span>
+                <span className="text-sm font-medium font-mono tracking-wide">ADD NEXT SHOT</span>
             </button>
+            </div>
           </div>
         </div>
 
@@ -996,13 +1871,13 @@ const App: React.FC = () => {
           >
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold text-zinc-100">{t('settings')}</h3>
-              <button
+          <button 
                 onClick={() => setIsSettingsOpen(false)}
                 className="text-zinc-400 hover:text-zinc-200 transition-colors"
-              >
+          >
                 <ChevronDown size={20} className="rotate-180" />
-              </button>
-            </div>
+          </button>
+        </div>
 
             <div className="space-y-4">
               <div>
@@ -1121,6 +1996,16 @@ const App: React.FC = () => {
                   </span>
                 )}
               </button>
+              <button
+                onClick={() => setProjectSettingsTab('project')}
+                className={`flex-1 px-6 py-3 text-sm font-medium transition-colors ${
+                  projectSettingsTab === 'project'
+                    ? 'text-cyan-400 border-b-2 border-cyan-400 bg-zinc-800/50'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                项目配置
+              </button>
             </div>
 
             {/* Content */}
@@ -1158,7 +2043,7 @@ const App: React.FC = () => {
                     )}
                   </button>
                 </div>
-              ) : (
+              ) : projectSettingsTab === 'keywords' ? (
                 <div className="space-y-4">
                   {keywords.length === 0 ? (
                     <div className="text-center py-12">
@@ -1266,10 +2151,325 @@ const App: React.FC = () => {
                     </>
                   )}
                 </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className={LabelClass}>项目默认画幅</label>
+                    <input
+                      type="text"
+                      value={projectAspectRatio}
+                      onChange={(e) => setProjectAspectRatio(e.target.value)}
+                      placeholder="例如: 9:16, 16:9, 4:3"
+                      className={`${InputClass} w-full`}
+                    />
+                    <p className="text-[10px] text-zinc-500 mt-1">
+                      设置后，所有新创建的镜头将默认使用此画幅。格式：宽:高（例如：9:16, 16:9, 4:3）
+                    </p>
+                  </div>
+                  
+                  <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-4">
+                    <p className="text-xs text-zinc-400 mb-2">常用画幅比例：</p>
+                    <div className="flex flex-wrap gap-2">
+                      {['9:16', '16:9', '4:3', '3:4', '1:1', '21:9'].map((ratio) => (
+                        <button
+                          key={ratio}
+                          onClick={() => setProjectAspectRatio(ratio)}
+                          className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                            projectAspectRatio === ratio
+                              ? 'bg-cyan-600 text-white'
+                              : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                          }`}
+                        >
+                          {ratio}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
           </div>
         </div>
+      )}
+
+      {/* Field Settings Modal */}
+      {isFieldSettingsOpen && (
+        <div 
+          className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4"
+          onClick={() => setIsFieldSettingsOpen(false)}
+        >
+          <div
+            className="bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 border-b border-zinc-800">
+              <h2 className="text-lg font-bold text-zinc-100">字段设置</h2>
+              <button
+                onClick={() => setIsFieldSettingsOpen(false)}
+                className="text-zinc-400 hover:text-zinc-200 transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="space-y-4">
+                <p className="text-xs text-zinc-400 mb-4">
+                  设置每个字段的显示状态和默认值。默认值类型：空缺 = 空值，继承 = 继承上一行的值，自定义 = 设置固定值。
+                  <br />
+                  AI补全：当全局AI补全功能开启时，只有勾选了"AI补全"的字段才会自动填充AI建议。默认只有"时长"字段允许AI补全。
+                </p>
+                
+                {/* Batch Actions */}
+                <div className="flex items-center justify-between p-3 bg-zinc-950 border border-zinc-800 rounded-lg mb-4">
+                  <div className="flex items-center space-x-4">
+                    <span className="text-xs text-zinc-400">批量操作：</span>
+                    <button
+                      onClick={() => {
+                        const allVisible = Object.values(fieldSettings).every(c => c.visible);
+                        setFieldSettings(prev => {
+                          const newSettings = { ...prev };
+                          Object.keys(newSettings).forEach(key => {
+                            newSettings[key as keyof FieldSettings] = {
+                              ...newSettings[key as keyof FieldSettings],
+                              visible: !allVisible
+                            };
+                          });
+                          return newSettings;
+                        });
+                      }}
+                      className="px-3 py-1.5 text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors"
+                    >
+                      {Object.values(fieldSettings).every(c => c.visible) ? '全部隐藏' : '全部显示'}
+                    </button>
+                    <select
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          setFieldSettings(prev => {
+                            const newSettings = { ...prev };
+                            Object.keys(newSettings).forEach(key => {
+                              newSettings[key as keyof FieldSettings] = {
+                                ...newSettings[key as keyof FieldSettings],
+                                defaultValueType: e.target.value as DefaultValueType,
+                                customValue: e.target.value === 'custom' ? newSettings[key as keyof FieldSettings].customValue : undefined
+                              };
+                            });
+                            return newSettings;
+                          });
+                          e.target.value = ''; // Reset selector
+                        }
+                      }}
+                      className={`${InputClass} text-xs py-1.5`}
+                      defaultValue=""
+                    >
+                      <option value="">批量设置默认值类型...</option>
+                      <option value="empty">全部设为：空缺</option>
+                      <option value="inherit">全部设为：继承</option>
+                      <option value="custom">全部设为：自定义值</option>
+                    </select>
+                    <button
+                      onClick={() => {
+                        const allAllowAI = Object.values(fieldSettings).every(c => c.allowAI);
+                        setFieldSettings(prev => {
+                          const newSettings = { ...prev };
+                          Object.keys(newSettings).forEach(key => {
+                            newSettings[key as keyof FieldSettings] = {
+                              ...newSettings[key as keyof FieldSettings],
+                              allowAI: !allAllowAI
+                            };
+                          });
+                          return newSettings;
+                        });
+                      }}
+                      className="px-3 py-1.5 text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors"
+                    >
+                      {Object.values(fieldSettings).every(c => c.allowAI) ? '全部禁用AI' : '全部启用AI'}
+                    </button>
+                  </div>
+                </div>
+                
+                {/* Field Settings Table */}
+                <div className="bg-zinc-950 border border-zinc-800 rounded-lg overflow-hidden">
+                  <table className="w-full">
+                    <thead className="bg-zinc-900 border-b border-zinc-800">
+                      <tr>
+                        <th className="px-4 py-2 text-left text-xs font-bold text-zinc-400 uppercase tracking-wider w-32">字段名称</th>
+                        <th className="px-4 py-2 text-center text-xs font-bold text-zinc-400 uppercase tracking-wider w-20">显示</th>
+                        <th className="px-4 py-2 text-center text-xs font-bold text-zinc-400 uppercase tracking-wider w-20">AI补全</th>
+                        <th className="px-4 py-2 text-left text-xs font-bold text-zinc-400 uppercase tracking-wider w-32">默认值类型</th>
+                        <th className="px-4 py-2 text-left text-xs font-bold text-zinc-400 uppercase tracking-wider">自定义值</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-800">
+                      {Object.entries(fieldSettings).map(([fieldKey, config]) => {
+                        const fieldLabels: Record<string, string> = {
+                          description: t('desc'),
+                          ert: t('ert'),
+                          size: t('size'),
+                          perspective: t('angle'),
+                          movement: t('move'),
+                          equipment: t('gear'),
+                          focalLength: t('lens'),
+                          aspectRatio: t('aspect'),
+                          notes: t('notes')
+                        };
+                        
+                        const fieldLabel = fieldLabels[fieldKey] || fieldKey;
+                        const isComboboxField = ['size', 'perspective', 'movement', 'equipment', 'focalLength'].includes(fieldKey);
+                        
+                        return (
+                          <tr key={fieldKey} className="hover:bg-zinc-900/50 transition-colors">
+                            <td className="px-4 py-3">
+                              <span className="text-sm text-zinc-100">{fieldLabel}</span>
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <input
+                                type="checkbox"
+                                checked={config.visible}
+                                onChange={(e) => {
+                                  setFieldSettings(prev => ({
+                                    ...prev,
+                                    [fieldKey]: { ...prev[fieldKey as keyof FieldSettings], visible: e.target.checked }
+                                  }));
+                                }}
+                                className="w-4 h-4 text-cyan-600 bg-zinc-800 border-zinc-700 rounded focus:ring-cyan-500 focus:ring-2 cursor-pointer"
+                              />
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <input
+                                type="checkbox"
+                                checked={config.allowAI}
+                                onChange={(e) => {
+                                  setFieldSettings(prev => ({
+                                    ...prev,
+                                    [fieldKey]: { ...prev[fieldKey as keyof FieldSettings], allowAI: e.target.checked }
+                                  }));
+                                }}
+                                className="w-4 h-4 text-cyan-600 bg-zinc-800 border-zinc-700 rounded focus:ring-cyan-500 focus:ring-2 cursor-pointer"
+                                disabled={!config.visible}
+                                title={!config.visible ? '字段未显示时无法启用AI补全' : ''}
+                              />
+                            </td>
+                            <td className="px-4 py-3">
+                              <select
+                                value={config.defaultValueType}
+                                onChange={(e) => {
+                                  setFieldSettings(prev => ({
+                                    ...prev,
+                                    [fieldKey]: { 
+                                      ...prev[fieldKey as keyof FieldSettings], 
+                                      defaultValueType: e.target.value as DefaultValueType,
+                                      customValue: e.target.value === 'custom' ? prev[fieldKey as keyof FieldSettings].customValue : undefined
+                                    }
+                                  }));
+                                }}
+                                className={`${InputClass} w-full text-xs py-1.5`}
+                                disabled={!config.visible}
+                              >
+                                <option value="empty">空缺</option>
+                                <option value="inherit">继承</option>
+                                <option value="custom">自定义值</option>
+                              </select>
+                            </td>
+                            <td className="px-4 py-3">
+                              {config.visible && config.defaultValueType === 'custom' ? (
+                                isComboboxField ? (
+                                  <select
+                                    value={config.customValue || ''}
+                                    onChange={(e) => {
+                                      setFieldSettings(prev => ({
+                                        ...prev,
+                                        [fieldKey]: { 
+                                          ...prev[fieldKey as keyof FieldSettings], 
+                                          customValue: e.target.value
+                                        }
+                                      }));
+                                    }}
+                                    className={`${InputClass} w-full text-xs py-1.5`}
+                                  >
+                                    <option value="">请选择...</option>
+                                    {fieldKey === 'size' && SHOT_SIZES.map(opt => (
+                                      <option key={opt.value} value={opt.value}>{getLabel(opt, langMode)}</option>
+                                    ))}
+                                    {fieldKey === 'perspective' && PERSPECTIVES.map(opt => (
+                                      <option key={opt.value} value={opt.value}>{getLabel(opt, langMode)}</option>
+                                    ))}
+                                    {fieldKey === 'movement' && MOVEMENTS.map(opt => (
+                                      <option key={opt.value} value={opt.value}>{getLabel(opt, langMode)}</option>
+                                    ))}
+                                    {fieldKey === 'equipment' && EQUIPMENT.map(opt => (
+                                      <option key={opt.value} value={opt.value}>{getLabel(opt, langMode)}</option>
+                                    ))}
+                                    {fieldKey === 'focalLength' && FOCAL_LENGTHS.map(opt => (
+                                      <option key={opt.value} value={opt.value}>{getLabel(opt, langMode)}</option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <input
+                                    type="text"
+                                    value={config.customValue || ''}
+                                    onChange={(e) => {
+                                      setFieldSettings(prev => ({
+                                        ...prev,
+                                        [fieldKey]: { 
+                                          ...prev[fieldKey as keyof FieldSettings], 
+                                          customValue: e.target.value
+                                        }
+                                      }));
+                                    }}
+                                    placeholder="输入自定义值..."
+                                    className={`${InputClass} w-full text-xs py-1.5`}
+                                  />
+                                )
+                              ) : (
+                                <span className="text-xs text-zinc-600">-</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end space-x-3 p-6 border-t border-zinc-800">
+              <button
+                onClick={() => setIsFieldSettingsOpen(false)}
+                className="px-4 py-2 text-sm font-medium text-zinc-400 hover:text-zinc-200 transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => setIsFieldSettingsOpen(false)}
+                className="px-4 py-2 text-sm font-medium bg-cyan-600 hover:bg-cyan-500 text-white rounded transition-colors"
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 要素配置弹窗 */}
+      {activeScene && (
+        <SceneElementsConfig
+          isOpen={isElementsConfigOpen}
+          onClose={() => setIsElementsConfigOpen(false)}
+          elements={activeScene.elements || []}
+          keywords={keywords}
+          outline={activeScene.outline || ''}
+          onSave={(elements) => {
+            updateScene(activeScene.id, 'elements', elements);
+          }}
+          onOutlineChange={(outline) => {
+            updateScene(activeScene.id, 'outline', outline);
+          }}
+        />
       )}
     </div>
   );

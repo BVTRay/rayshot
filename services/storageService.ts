@@ -7,18 +7,20 @@ export interface ProjectFile {
   version: string;
   timestamp: number;
   projectTitle?: string;
+  projectAspectRatio?: string; // 项目默认画幅
   episodes: Episode[];
   keywords?: ProjectKeyword[];
 }
 
 // --- Local Storage ---
 
-export const saveToLocalStorage = (episodes: Episode[], projectTitle?: string) => {
+export const saveToLocalStorage = (episodes: Episode[], projectTitle?: string, projectAspectRatio?: string) => {
   try {
     const data: ProjectFile = {
       version: '1.0',
       timestamp: Date.now(),
       projectTitle,
+      projectAspectRatio,
       episodes,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -29,14 +31,15 @@ export const saveToLocalStorage = (episodes: Episode[], projectTitle?: string) =
   }
 };
 
-export const loadFromLocalStorage = (): { episodes: Episode[]; projectTitle?: string } | null => {
+export const loadFromLocalStorage = (): { episodes: Episode[]; projectTitle?: string; projectAspectRatio?: string } | null => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const data: ProjectFile = JSON.parse(raw);
     return {
       episodes: data.episodes || [],
-      projectTitle: data.projectTitle
+      projectTitle: data.projectTitle,
+      projectAspectRatio: data.projectAspectRatio
     };
   } catch (e) {
     console.error("Failed to load from local storage", e);
@@ -46,11 +49,12 @@ export const loadFromLocalStorage = (): { episodes: Episode[]; projectTitle?: st
 
 // --- File I/O ---
 
-export const exportProjectFile = (episodes: Episode[], projectTitle: string) => {
+export const exportProjectFile = (episodes: Episode[], projectTitle: string, projectAspectRatio?: string) => {
   const data: ProjectFile = {
     version: '1.0',
     timestamp: Date.now(),
     projectTitle,
+    projectAspectRatio,
     episodes,
   };
 
@@ -72,7 +76,7 @@ export const exportProjectFile = (episodes: Episode[], projectTitle: string) => 
   URL.revokeObjectURL(url);
 };
 
-export const parseProjectFile = async (file: File): Promise<{ episodes: Episode[]; projectTitle?: string }> => {
+export const parseProjectFile = async (file: File): Promise<{ episodes: Episode[]; projectTitle?: string; projectAspectRatio?: string }> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     
@@ -88,7 +92,8 @@ export const parseProjectFile = async (file: File): Promise<{ episodes: Episode[
         
         resolve({
           episodes: data.episodes,
-          projectTitle: data.projectTitle
+          projectTitle: data.projectTitle,
+          projectAspectRatio: data.projectAspectRatio
         });
       } catch (err) {
         reject(err);

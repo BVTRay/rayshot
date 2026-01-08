@@ -30,7 +30,7 @@ interface MatchResult {
   suffix?: string; // The part to complete (ghost text)
 }
 
-export const MentionTextarea: React.FC<MentionTextareaProps> = ({
+export const MentionTextarea = React.forwardRef<HTMLTextAreaElement, MentionTextareaProps>(({
   value,
   onChange,
   keywords,
@@ -47,8 +47,19 @@ export const MentionTextarea: React.FC<MentionTextareaProps> = ({
   minHeight = 40,
   maxHeight = 150,
   onHeightChange
-}) => {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+}, forwardedRef) => {
+  const internalRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = internalRef;
+  
+  // Merge internal and forwarded refs
+  const setRefs = useCallback((element: HTMLTextAreaElement | null) => {
+    internalRef.current = element;
+    if (typeof forwardedRef === 'function') {
+      forwardedRef(element);
+    } else if (forwardedRef) {
+      (forwardedRef as React.MutableRefObject<HTMLTextAreaElement | null>).current = element;
+    }
+  }, [forwardedRef]);
   const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -522,6 +533,17 @@ export const MentionTextarea: React.FC<MentionTextareaProps> = ({
       return;
     }
     
+    // IMPORTANT: Check dropdown first before any matchResult logic
+    // If dropdown is showing and Enter is pressed, accept suggestion
+    if (showDropdown && matchResult && e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (matchResult.matches.length > 0) {
+        acceptSuggestion(matchResult.matches[selectedIndex]);
+      }
+      return;
+    }
+    
+    // Handle autocomplete menu navigation (but not Enter, that's handled above)
     if (matchResult) {
       if (e.key === 'Tab' && !e.shiftKey) {
         e.preventDefault();
@@ -542,14 +564,6 @@ export const MentionTextarea: React.FC<MentionTextareaProps> = ({
           setSelectedIndex(prev => (prev - 1 + matchResult.matches.length) % matchResult.matches.length);
           return;
         }
-        
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          if (matchResult.matches.length > 0) {
-            acceptSuggestion(matchResult.matches[selectedIndex]);
-          }
-          return;
-        }
       }
       
       if (e.key === 'Escape') {
@@ -560,7 +574,28 @@ export const MentionTextarea: React.FC<MentionTextareaProps> = ({
       }
     }
     
-    onKeyDown?.(e);
+    // Handle normal Enter key (without Shift) - delegate to parent for navigation
+    // This will be reached if:
+    // 1. No dropdown is showing (showDropdown is false), OR
+    // 2. No matchResult exists
+    // Shift+Enter allows newline (won't enter this block)
+    if (e.key === 'Enter' && !e.shiftKey) {
+      // Call parent handler - it will handle preventDefault and navigation
+      if (onKeyDown) {
+        onKeyDown(e);
+        // If parent handled it (called preventDefault), don't do anything else
+        if (e.defaultPrevented) {
+          return;
+        }
+      }
+      // If no parent handler or it didn't prevent default, allow newline
+      return;
+    }
+    
+    // For all other keys, call parent handler if provided
+    if (onKeyDown && e.key !== 'Enter') {
+      onKeyDown(e);
+    }
   }, [matchResult, showDropdown, selectedIndex, acceptSuggestion, onKeyDown, isCursorOnLastLine, onAddShot]);
 
   // Handle click on suggestion
@@ -750,7 +785,7 @@ export const MentionTextarea: React.FC<MentionTextareaProps> = ({
   }, [value, textParts.length]);
 
   return (
-    <div className="relative">
+    <div className="relative w-full">
       {/* Highlight overlay - shows highlights and ghost text */}
       {textParts.length > 0 && (
         <div
@@ -790,7 +825,7 @@ export const MentionTextarea: React.FC<MentionTextareaProps> = ({
       )}
       
       <textarea
-        ref={textareaRef}
+        ref={setRefs}
         value={value}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
@@ -836,4 +871,6 @@ export const MentionTextarea: React.FC<MentionTextareaProps> = ({
       )}
     </div>
   );
-};
+});
+
+MentionTextarea.displayName = 'MentionTextarea';

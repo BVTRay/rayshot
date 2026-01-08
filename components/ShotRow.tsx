@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Trash2, GripVertical, Plus, Sparkles, Loader2, AlertCircle, RefreshCw, ZoomIn, X } from 'lucide-react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Shot, LanguageMode } from '../types';
+import { Shot, LanguageMode, FieldSettings } from '../types';
 import { 
   SHOT_SIZES, 
   FOCAL_LENGTHS, 
@@ -17,20 +17,34 @@ import { generateStoryboardSketch, suggestCameraSettings, CameraSuggestion } fro
 import { MentionTextarea } from './MentionTextarea';
 import { ProjectKeyword } from '../types';
 
+export type FocusableField = 'description' | 'notes';
+
 interface ShotRowProps {
   shot: Shot;
   onChange: (id: string, field: keyof Shot, value: any) => void;
   onDelete: (id: string) => void;
   onInsert: (afterShotId: string) => void;
   onAddShot?: () => void; // Callback for adding new shot
+  onNavigateNext?: (currentField: FocusableField) => void; // Callback for Enter key navigation (move to next row)
+  onNavigatePrev?: () => void; // Callback for Shift+Tab navigation (move to prev row)
   langMode: LanguageMode;
   shouldAutoFocus?: boolean;
+  focusField?: FocusableField; // Which field to focus
   sceneLocation: string;
   sceneTime: string;
+  sceneOutline?: string; // 场景大纲，用于AI参考
+  sceneElements?: ProjectKeyword[]; // 场景关键要素，用于AI参考
   isSketchExpanded: boolean;
   isAutocompleteEnabled?: boolean; // AI自动补全功能开关
   keywords?: ProjectKeyword[];
   previousShot?: { size?: string; movement?: string };
+  fieldSettings?: FieldSettings; // 字段配置
+  isBatchEditMode?: boolean; // Batch edit mode
+  isSelected?: boolean; // Whether this shot is selected
+  onToggleSelect?: (shotId: string) => void; // Toggle selection
+  isDragSelecting?: boolean; // Whether drag selection is active
+  onDragSelectStart?: () => void; // Start drag selection
+  onDragSelectEnd?: () => void; // End drag selection
 }
 
 export const ShotRow: React.FC<ShotRowProps> = ({ 
@@ -39,16 +53,30 @@ export const ShotRow: React.FC<ShotRowProps> = ({
   onDelete, 
   onInsert,
   onAddShot,
+  onNavigateNext,
+  onNavigatePrev,
   langMode,
   shouldAutoFocus,
+  focusField = 'description',
   sceneLocation,
   sceneTime,
+  sceneOutline,
+  sceneElements,
   isSketchExpanded,
   isAutocompleteEnabled = true,
   keywords = [],
-  previousShot
+  previousShot,
+  fieldSettings,
+  isBatchEditMode = false,
+  isSelected = false,
+  onToggleSelect,
+  isDragSelecting: externalIsDragSelecting = false,
+  onDragSelectStart,
+  onDragSelectEnd
 }) => {
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
+  const notesRef = useRef<HTMLTextAreaElement>(null);
+  const rowRef = useRef<HTMLTableRowElement>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showZoom, setShowZoom] = useState(false);
@@ -67,30 +95,40 @@ export const ShotRow: React.FC<ShotRowProps> = ({
   // Smart Autofill: Request AI suggestion
   const requestAISuggestion = useCallback(async (description: string) => {
     if (!description || description.trim().length < 5) return;
+    if (!isAutocompleteEnabled) return; // 如果全局AI补全功能关闭，不执行
     
     setIsSuggesting(true);
     try {
-      const result = await suggestCameraSettings(description, sceneLocation, previousShot);
+      const result = await suggestCameraSettings(description, sceneLocation, previousShot, sceneOutline, sceneElements);
       if (result.suggestion) {
         setAiSuggestion(result.suggestion);
         
-        // Apply suggestions only if user hasn't manually modified those fields
+        // Apply suggestions only if:
+        // 1. Global AI autocomplete is enabled (isAutocompleteEnabled)
+        // 2. Field allows AI (fieldSettings[field].allowAI)
+        // 3. User hasn't manually modified the field
+        // 4. Field is currently empty
         const fieldsToUpdate: Array<{ field: keyof Shot; value: string }> = [];
         
         // Check current state to avoid overwriting user changes
         const currentUserModified = userModifiedFields;
         
-        if (!currentUserModified.has('size') && !shot.size) {
+        // Check if field allows AI and is not modified by user
+        if (fieldSettings?.size?.allowAI && !currentUserModified.has('size') && !shot.size) {
           fieldsToUpdate.push({ field: 'size', value: result.suggestion.shot_size });
         }
-        if (!currentUserModified.has('perspective') && !shot.perspective) {
+        if (fieldSettings?.perspective?.allowAI && !currentUserModified.has('perspective') && !shot.perspective) {
           fieldsToUpdate.push({ field: 'perspective', value: result.suggestion.perspective });
         }
-        if (!currentUserModified.has('movement') && !shot.movement) {
+        if (fieldSettings?.movement?.allowAI && !currentUserModified.has('movement') && !shot.movement) {
           fieldsToUpdate.push({ field: 'movement', value: result.suggestion.movement });
         }
-        if (!currentUserModified.has('focalLength') && !shot.focalLength) {
+        if (fieldSettings?.focalLength?.allowAI && !currentUserModified.has('focalLength') && !shot.focalLength) {
           fieldsToUpdate.push({ field: 'focalLength', value: result.suggestion.focal_length });
+        }
+        // Add ERT (时长) support
+        if (fieldSettings?.ert?.allowAI && !currentUserModified.has('ert') && !shot.ert && result.suggestion.ert) {
+          fieldsToUpdate.push({ field: 'ert', value: result.suggestion.ert });
         }
         
         // Apply updates and highlight
@@ -111,7 +149,7 @@ export const ShotRow: React.FC<ShotRowProps> = ({
     } finally {
       setIsSuggesting(false);
     }
-  }, [shot.id, sceneLocation, previousShot, userModifiedFields, shot.size, shot.perspective, shot.movement, shot.focalLength, onChange]);
+  }, [shot.id, sceneLocation, previousShot, userModifiedFields, shot.size, shot.perspective, shot.movement, shot.focalLength, shot.ert, onChange, isAutocompleteEnabled, fieldSettings]);
 
   // Debounced suggestion trigger
   const triggerSuggestion = useCallback((description: string) => {
@@ -124,7 +162,7 @@ export const ShotRow: React.FC<ShotRowProps> = ({
         lastDescriptionRef.current = description;
         requestAISuggestion(description);
       }
-    }, 1000);
+    }, 3000); // 停顿3秒后触发AI补全
   }, [requestAISuggestion]);
 
   // Handle description change with debounce
@@ -133,12 +171,27 @@ export const ShotRow: React.FC<ShotRowProps> = ({
     triggerSuggestion(newValue);
   }, [shot.id, onChange, triggerSuggestion]);
 
-  // Handle description blur
+  // Handle description blur - 不再在失焦时立即触发，只依赖debounce
   const handleDescriptionBlur = useCallback(() => {
-    if (shot.description && shot.description.trim().length >= 5) {
-      requestAISuggestion(shot.description);
+    // 移除失焦时的立即触发，完全依赖3秒debounce
+  }, []);
+
+  // Handle Enter key for navigation (Shift+Enter for newline)
+  const handleDescriptionKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // If Enter without Shift, navigate to next row's description
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      onNavigateNext?.('description');
     }
-  }, [shot.description, requestAISuggestion]);
+  }, [onNavigateNext]);
+
+  const handleNotesKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // If Enter without Shift, navigate to next row's notes
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      onNavigateNext?.('notes');
+    }
+  }, [onNavigateNext]);
 
   // Track user modifications
   const handleFieldChange = useCallback((field: keyof Shot, value: any) => {
@@ -175,10 +228,14 @@ export const ShotRow: React.FC<ShotRowProps> = ({
   const expandedTextareaClass = "bg-transparent border-0 rounded px-1.5 py-0.5 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-0 w-full transition-colors leading-tight text-center resize-none";
 
   useEffect(() => {
-    if (shouldAutoFocus && descriptionRef.current) {
-      descriptionRef.current.focus();
+    if (shouldAutoFocus) {
+      if (focusField === 'description' && descriptionRef.current) {
+        descriptionRef.current.focus();
+      } else if (focusField === 'notes' && notesRef.current) {
+        notesRef.current.focus();
+      }
     }
-  }, [shouldAutoFocus]);
+  }, [shouldAutoFocus, focusField]);
 
   // Cleanup debounce timer on unmount
   useEffect(() => {
@@ -188,6 +245,25 @@ export const ShotRow: React.FC<ShotRowProps> = ({
       }
     };
   }, []);
+
+  // Handle mouse drag selection on the entire row
+  useEffect(() => {
+    if (!isBatchEditMode || !externalIsDragSelecting) return;
+
+    const rowElement = rowRef.current;
+    if (!rowElement) return;
+
+    const handleMouseEnter = () => {
+      if (externalIsDragSelecting) {
+        onToggleSelect?.(shot.id);
+      }
+    };
+
+    rowElement.addEventListener('mouseenter', handleMouseEnter);
+    return () => {
+      rowElement.removeEventListener('mouseenter', handleMouseEnter);
+    };
+  }, [externalIsDragSelecting, isBatchEditMode, shot.id, onToggleSelect]);
 
   // Initialize description height when component mounts or when expanded state changes
   useEffect(() => {
@@ -202,7 +278,7 @@ export const ShotRow: React.FC<ShotRowProps> = ({
     setError(null);
     
     try {
-      const result = await generateStoryboardSketch(shot, sceneLocation, sceneTime);
+      const result = await generateStoryboardSketch(shot, sceneLocation, sceneTime, sceneOutline, sceneElements);
       
       if (result.error) {
         setError(result.error);
@@ -252,15 +328,25 @@ export const ShotRow: React.FC<ShotRowProps> = ({
     ? 52 
     : (descriptionHeight || 40); // Use actual description height when collapsed
 
+  // Combine refs: setNodeRef for dnd-kit and rowRef for drag selection
+  const combinedRef = useCallback((node: HTMLTableRowElement | null) => {
+    setNodeRef(node);
+    rowRef.current = node;
+  }, [setNodeRef]);
+
   return (
     <tr 
-      ref={setNodeRef} 
+      ref={combinedRef} 
       style={{
         ...style,
         minHeight: !isSketchExpanded ? '48px' : undefined,
         height: 'auto' // Allow row to grow with content
       }}
-      className={`border-b border-zinc-800 transition-colors group ${isDragging ? 'bg-zinc-800 shadow-lg' : 'hover:bg-zinc-900/40'}`}
+      className={`border-b border-zinc-800 transition-colors group ${
+        isDragging ? 'bg-zinc-800 shadow-lg' : 
+        isBatchEditMode && isSelected ? 'bg-cyan-950/50 border-l-2 border-l-cyan-500' :
+        'hover:bg-zinc-900/40'
+      }`}
     >
       {/* Drag Handle */}
       <td className="p-1 w-8 text-center align-middle relative group/drag">
@@ -298,14 +384,17 @@ export const ShotRow: React.FC<ShotRowProps> = ({
       </td>
       
       {/* Description */}
+      {(!fieldSettings || fieldSettings.description.visible) && (
       <td className={`p-1 w-64 ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
         <MentionTextarea
+          ref={descriptionRef}
           value={shot.description}
-          onChange={handleDescriptionChange}
-          onBlur={handleDescriptionBlur}
+          onChange={isBatchEditMode ? undefined : handleDescriptionChange}
+          onBlur={isBatchEditMode ? undefined : handleDescriptionBlur}
+          onKeyDown={isBatchEditMode ? undefined : handleDescriptionKeyDown}
           onAddShot={onAddShot}
           keywords={keywords}
-          isAutocompleteEnabled={isAutocompleteEnabled}
+          isAutocompleteEnabled={isAutocompleteEnabled && !isBatchEditMode}
           placeholder="..."
           rows={1}
           autoResize={!isSketchExpanded}
@@ -316,7 +405,8 @@ export const ShotRow: React.FC<ShotRowProps> = ({
               setDescriptionHeight(height);
             }
           }}
-          className={isSketchExpanded ? expandedTextareaClass : `${baseInputClass} resize-none py-1 overflow-hidden`}
+          className={isSketchExpanded ? expandedTextareaClass : `${baseInputClass} resize-none py-1 overflow-hidden ${isBatchEditMode ? 'opacity-50 cursor-not-allowed' : ''}`}
+          style={isBatchEditMode ? { pointerEvents: 'none' } : undefined}
           style={{ 
             minHeight: isSketchExpanded && typeof expandedDescriptionHeight === 'number' 
               ? `${expandedDescriptionHeight}px` 
@@ -334,14 +424,15 @@ export const ShotRow: React.FC<ShotRowProps> = ({
             boxSizing: 'border-box',
             resize: 'none'
           }}
-          onKeyDown={(e) => e.stopPropagation()}
           onPointerDown={(e) => e.stopPropagation()}
         />
       </td>
+      )}
 
       {/* ERT */}
-      <td className={`p-1 w-20 ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
-        <div className="flex items-center justify-center gap-1">
+      {(!fieldSettings || fieldSettings.ert.visible) && (
+      <td className={`p-1 w-9 text-center ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
+        <div className="flex items-center justify-center" style={{ height: `${otherInputHeight}px` }}>
           <input
             type="text"
             value={shot.ert || ''}
@@ -352,20 +443,24 @@ export const ShotRow: React.FC<ShotRowProps> = ({
                 onChange(shot.id, 'ert', value);
               }
             }}
-            className={isSketchExpanded ? expandedInputClass : `${baseInputClass} text-center w-12`}
+            className={isSketchExpanded ? expandedInputClass : `${baseInputClass} text-center`}
             style={{ 
               height: `${otherInputHeight}px`,
-              lineHeight: `${otherInputHeight}px`
+              lineHeight: `${otherInputHeight}px`,
+              width: '36px',
+              minWidth: '36px'
             }}
             onPointerDown={(e) => e.stopPropagation()}
             placeholder="0"
           />
-          <span className="text-[10px] text-zinc-500">sec</span>
+          <span className="text-[9px] text-zinc-600 flex-shrink-0 ml-0.5">{getUIText('secondUnit', langMode)}</span>
         </div>
       </td>
+      )}
 
-      {/* Comboboxes */}
-      <td className={`p-1 w-28 ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
+      {/* Comboboxes - Size */}
+      {(!fieldSettings || fieldSettings.size.visible) && (
+      <td className={`p-1 w-28 text-center ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
         <div onPointerDown={(e) => e.stopPropagation()} style={{ height: `${otherInputHeight}px`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Combobox
             value={shot.size}
@@ -375,12 +470,16 @@ export const ShotRow: React.FC<ShotRowProps> = ({
             className="h-full"
             isExpanded={isSketchExpanded}
             isHighlighted={highlightedFields.has('size')}
-            suggestion={aiSuggestion && userModifiedFields.has('size') ? aiSuggestion.shot_size : undefined}
+            suggestion={aiSuggestion && userModifiedFields.has('size') && fieldSettings?.size?.allowAI && isAutocompleteEnabled ? aiSuggestion.shot_size : undefined}
+            disabled={isBatchEditMode}
           />
         </div>
       </td>
+      )}
 
-      <td className={`p-1 w-28 ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
+      {/* Perspective */}
+      {(!fieldSettings || fieldSettings.perspective.visible) && (
+      <td className={`p-1 w-28 text-center ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
          <div onPointerDown={(e) => e.stopPropagation()} style={{ height: `${otherInputHeight}px`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
            <Combobox
             value={shot.perspective}
@@ -390,12 +489,16 @@ export const ShotRow: React.FC<ShotRowProps> = ({
             className="h-full"
             isExpanded={isSketchExpanded}
             isHighlighted={highlightedFields.has('perspective')}
-            suggestion={aiSuggestion && userModifiedFields.has('perspective') ? aiSuggestion.perspective : undefined}
+            suggestion={aiSuggestion && userModifiedFields.has('perspective') && fieldSettings?.perspective?.allowAI && isAutocompleteEnabled ? aiSuggestion.perspective : undefined}
+            disabled={isBatchEditMode}
           />
          </div>
       </td>
+      )}
 
-      <td className={`p-1 w-28 ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
+      {/* Movement */}
+      {(!fieldSettings || fieldSettings.movement.visible) && (
+      <td className={`p-1 w-28 text-center ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
          <div onPointerDown={(e) => e.stopPropagation()} style={{ height: `${otherInputHeight}px`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
            <Combobox
             value={shot.movement}
@@ -405,12 +508,16 @@ export const ShotRow: React.FC<ShotRowProps> = ({
             className="h-full"
             isExpanded={isSketchExpanded}
             isHighlighted={highlightedFields.has('movement')}
-            suggestion={aiSuggestion && userModifiedFields.has('movement') ? aiSuggestion.movement : undefined}
+            suggestion={aiSuggestion && userModifiedFields.has('movement') && fieldSettings?.movement?.allowAI && isAutocompleteEnabled ? aiSuggestion.movement : undefined}
+            disabled={isBatchEditMode}
           />
          </div>
       </td>
+      )}
 
-       <td className={`p-1 w-24 ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
+       {/* Equipment */}
+       {(!fieldSettings || fieldSettings.equipment.visible) && (
+       <td className={`p-1 w-24 text-center ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
          <div onPointerDown={(e) => e.stopPropagation()} style={{ height: `${otherInputHeight}px`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
            <Combobox
             value={shot.equipment}
@@ -419,11 +526,15 @@ export const ShotRow: React.FC<ShotRowProps> = ({
             langMode={langMode}
             className="h-full"
             isExpanded={isSketchExpanded}
+            disabled={isBatchEditMode}
           />
          </div>
       </td>
+      )}
 
-      <td className={`p-1 w-32 ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
+      {/* Focal Length */}
+      {(!fieldSettings || fieldSettings.focalLength.visible) && (
+      <td className={`p-1 w-32 text-center ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
          <div onPointerDown={(e) => e.stopPropagation()} style={{ height: `${otherInputHeight}px`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
            <Combobox
             value={shot.focalLength}
@@ -433,18 +544,22 @@ export const ShotRow: React.FC<ShotRowProps> = ({
             className="h-full"
             isExpanded={isSketchExpanded}
             isHighlighted={highlightedFields.has('focalLength')}
-            suggestion={aiSuggestion && userModifiedFields.has('focalLength') ? aiSuggestion.focal_length : undefined}
+            suggestion={aiSuggestion && userModifiedFields.has('focalLength') && fieldSettings?.focalLength?.allowAI && isAutocompleteEnabled ? aiSuggestion.focal_length : undefined}
+            disabled={isBatchEditMode}
           />
          </div>
       </td>
+      )}
 
       {/* Aspect Ratio */}
-      <td className={`p-1 w-16 ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
+      {(!fieldSettings || fieldSettings.aspectRatio.visible) && (
+      <td className={`p-1 w-16 text-center ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
         <input 
           type="text"
           value={shot.aspectRatio}
-          onChange={(e) => onChange(shot.id, 'aspectRatio', e.target.value)}
-          className={isSketchExpanded ? `${expandedInputClass} font-mono text-[10px] text-zinc-400` : `${baseInputClass} text-center font-mono text-[10px] text-zinc-400`}
+          onChange={isBatchEditMode ? undefined : (e) => onChange(shot.id, 'aspectRatio', e.target.value)}
+          disabled={isBatchEditMode}
+          className={isSketchExpanded ? `${expandedInputClass} font-mono text-[10px] text-zinc-400` : `${baseInputClass} text-center font-mono text-[10px] text-zinc-400 ${isBatchEditMode ? 'opacity-50 cursor-not-allowed' : ''}`}
           style={{ 
             height: `${otherInputHeight}px`,
             lineHeight: `${otherInputHeight}px`
@@ -452,21 +567,29 @@ export const ShotRow: React.FC<ShotRowProps> = ({
           onPointerDown={(e) => e.stopPropagation()}
         />
       </td>
+      )}
 
       {/* Notes */}
+      {(!fieldSettings || fieldSettings.notes.visible) && (
       <td className={`p-1 w-40 ${isSketchExpanded ? 'align-middle' : 'align-top'}`}>
-        <input
-          type="text"
+        <textarea
+          ref={notesRef}
           value={shot.notes}
-          onChange={(e) => onChange(shot.id, 'notes', e.target.value)}
-          className={isSketchExpanded ? expandedInputClass : baseInputClass}
+          onChange={isBatchEditMode ? undefined : (e) => onChange(shot.id, 'notes', e.target.value)}
+          onKeyDown={isBatchEditMode ? undefined : handleNotesKeyDown}
+          disabled={isBatchEditMode}
+          className={isSketchExpanded ? expandedInputClass : `${baseInputClass} resize-none overflow-hidden ${isBatchEditMode ? 'opacity-50 cursor-not-allowed' : ''}`}
           style={{ 
             height: `${otherInputHeight}px`,
-            lineHeight: `${otherInputHeight}px`
+            lineHeight: isSketchExpanded ? `${otherInputHeight}px` : '1.5',
+            paddingTop: isSketchExpanded ? '0' : '8px',
+            paddingBottom: isSketchExpanded ? '0' : '8px'
           }}
           onPointerDown={(e) => e.stopPropagation()}
+          rows={1}
         />
       </td>
+      )}
 
       {/* Visual: Sketch Generation */}
       <td className={`p-1 w-32 align-top ${!isSketchExpanded ? 'hidden' : ''}`}>
@@ -550,10 +673,83 @@ export const ShotRow: React.FC<ShotRowProps> = ({
         </div>
       </td>
 
-      {/* Actions: Delete */}
-      <td className="p-1 w-16 text-center align-top">
+      {/* Checkbox Column */}
+      {isBatchEditMode && (
+        <td className="p-1 w-12 text-center align-top">
+          <div 
+            className="flex items-center justify-center"
+            style={{ height: `${otherInputHeight}px` }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <input
+              type="checkbox"
+              checked={isSelected}
+              onChange={(e) => {
+                // Only handle change if not in drag mode
+                if (!externalIsDragSelecting) {
+                  onToggleSelect?.(shot.id);
+                }
+              }}
+              onMouseDown={(e) => {
+                // Start drag selection only if left button
+                if (e.button === 0) {
+                  // Track if this is a drag or click
+                  let isDragging = false;
+                  let hasMoved = false;
+                  const startX = e.clientX;
+                  const startY = e.clientY;
+                  const checkbox = e.currentTarget;
+                  
+                  const handleMouseMove = (moveEvent: MouseEvent) => {
+                    const deltaX = Math.abs(moveEvent.clientX - startX);
+                    const deltaY = Math.abs(moveEvent.clientY - startY);
+                    if (deltaX > 3 || deltaY > 3) {
+                      if (!isDragging) {
+                        isDragging = true;
+                        hasMoved = true;
+                        // Prevent the default checkbox change
+                        checkbox.checked = isSelected;
+                        onDragSelectStart?.();
+                        // Toggle selection for the starting checkbox
+                        onToggleSelect?.(shot.id);
+                      }
+                    }
+                  };
+                  
+                  const handleMouseUp = () => {
+                    if (!hasMoved) {
+                      // It was a click, not a drag - let onChange handle it
+                      onDragSelectEnd?.();
+                    } else {
+                      // It was a drag - end drag mode
+                      onDragSelectEnd?.();
+                    }
+                    document.removeEventListener('mousemove', handleMouseMove);
+                    document.removeEventListener('mouseup', handleMouseUp);
+                  };
+                  
+                  document.addEventListener('mousemove', handleMouseMove);
+                  document.addEventListener('mouseup', handleMouseUp, { once: true });
+                }
+              }}
+              className="w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0 cursor-pointer"
+              onClick={(e) => {
+                e.stopPropagation();
+                // Prevent default checkbox behavior if in drag mode
+                if (externalIsDragSelecting) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }
+              }}
+            />
+          </div>
+        </td>
+      )}
+
+      {/* Delete Column */}
+      <td className="p-1 w-12 text-center align-top">
         <div 
-          className="flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+          className={`flex items-center justify-center ${isBatchEditMode ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}
           style={{ height: `${otherInputHeight}px` }}
           onPointerDown={(e) => e.stopPropagation()}
         >

@@ -9,6 +9,7 @@ export interface OptionItem {
 // --- Data Mappings ---
 
 export const SHOT_SIZES: OptionItem[] = [
+  { value: '', labelZh: '-' },
   { value: 'ECU', labelZh: '大特写' },
   { value: 'CU', labelZh: '特写' },
   { value: 'MCU', labelZh: '中近景' },
@@ -20,6 +21,7 @@ export const SHOT_SIZES: OptionItem[] = [
 ];
 
 export const PERSPECTIVES: OptionItem[] = [
+  { value: '', labelZh: '-' },
   { value: 'Eye-level', labelZh: '平视' },
   { value: 'Low Angle', labelZh: '仰拍' },
   { value: 'High Angle', labelZh: '俯拍' },
@@ -31,6 +33,7 @@ export const PERSPECTIVES: OptionItem[] = [
 ];
 
 export const MOVEMENTS: OptionItem[] = [
+  { value: '', labelZh: '-' },
   { value: 'Static', labelZh: '固定' },
   { value: 'Pan Left', labelZh: '左摇' },
   { value: 'Pan Right', labelZh: '右摇' },
@@ -47,6 +50,7 @@ export const MOVEMENTS: OptionItem[] = [
 ];
 
 export const FOCAL_LENGTHS: OptionItem[] = [
+  { value: '', labelZh: '-' },
   { value: '16mm (Wide)', labelZh: '16mm 大广角' },
   { value: '24mm (Wide)', labelZh: '24mm 广角' },
   { value: '35mm (Standard Wide)', labelZh: '35mm 人文' },
@@ -58,6 +62,7 @@ export const FOCAL_LENGTHS: OptionItem[] = [
 
 // Added some basic translations for Equipment to keep UI consistent
 export const EQUIPMENT: OptionItem[] = [
+  { value: '', labelZh: '-' },
   { value: 'Tripod', labelZh: '三脚架' },
   { value: 'Handheld', labelZh: '手持' },
   { value: 'Gimbal', labelZh: '稳定器' },
@@ -164,7 +169,8 @@ export const UI_LABELS = {
     generating: 'Generating...',
     error: 'Error',
     zoom: 'Zoom',
-    regenerate: 'Regenerate'
+    regenerate: 'Regenerate',
+    secondUnit: 'sec'
   },
   zh: {
     episodes: '集数列表',
@@ -204,7 +210,8 @@ export const UI_LABELS = {
     generating: '生成中...',
     error: '错误',
     zoom: '放大',
-    regenerate: '重新生成'
+    regenerate: '重新生成',
+    secondUnit: '秒'
   }
 };
 

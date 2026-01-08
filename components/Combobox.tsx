@@ -13,6 +13,7 @@ interface ComboboxProps {
   isExpanded?: boolean;
   isHighlighted?: boolean;
   suggestion?: string;
+  disabled?: boolean;
 }
 
 export const Combobox: React.FC<ComboboxProps> = ({
@@ -24,7 +25,8 @@ export const Combobox: React.FC<ComboboxProps> = ({
   className,
   isExpanded = false,
   isHighlighted = false,
-  suggestion
+  suggestion,
+  disabled = false
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -36,7 +38,9 @@ export const Combobox: React.FC<ComboboxProps> = ({
 
   // Derive display text
   const selectedOption = options.find(o => o.value === value);
-  const displayLabel = selectedOption ? getLabel(selectedOption, langMode) : value;
+  const displayLabel = selectedOption 
+    ? (selectedOption.value === '' ? '-' : getLabel(selectedOption, langMode))
+    : (value === '' ? '-' : value);
 
   // Filter options based on query
   const filteredOptions = useMemo(() => {
@@ -108,7 +112,7 @@ export const Combobox: React.FC<ComboboxProps> = ({
     ? `w-full h-full bg-transparent border-0 rounded px-1.5 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-0 transition-all truncate text-center ${
         isHighlighted ? 'ring-2 ring-cyan-400/50 bg-cyan-400/10' : ''
       }`
-    : `w-full h-full bg-zinc-900 border-0 rounded px-1.5 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-0 transition-all truncate ${
+    : `w-full h-full bg-zinc-900 border-0 rounded pl-1.5 pr-6 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-0 transition-all truncate text-center ${
         isHighlighted ? 'ring-2 ring-cyan-400/50 bg-cyan-400/10' : ''
       }`;
 
@@ -123,27 +127,29 @@ export const Combobox: React.FC<ComboboxProps> = ({
         <input
           ref={inputRef}
           type="text"
-          className={inputClass}
+          className={`${inputClass} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
           value={isOpen ? query : displayLabel}
-          onChange={(e) => {
+          onChange={disabled ? undefined : (e) => {
             setQuery(e.target.value);
             if (!isOpen) setIsOpen(true);
             setActiveIndex(0); // Reset selection on type
           }}
-          onFocus={() => {
+          onFocus={disabled ? undefined : () => {
             setQuery(''); // Clear query to allow fresh typing
             setIsOpen(true);
           }}
-          onKeyDown={handleKeyDown}
+          onKeyDown={disabled ? undefined : handleKeyDown}
           placeholder={placeholder || "-"}
           autoComplete="off"
+          disabled={disabled}
+          readOnly={disabled}
         />
         {!isExpanded && (
-          <ChevronDown size={10} className="absolute right-1 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none group-hover:text-zinc-300" />
+          <ChevronDown size={10} className="absolute right-1 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none group-hover:text-zinc-300 flex-shrink-0" />
         )}
       </div>
 
-      {isOpen && (
+      {isOpen && !disabled && (
         <div 
           ref={listRef}
           className="absolute z-50 w-full min-w-[120px] mt-1 bg-zinc-800 border border-zinc-600 rounded shadow-xl max-h-64 overflow-y-auto left-0"
